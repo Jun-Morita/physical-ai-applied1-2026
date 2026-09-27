@@ -1,0 +1,10 @@
+{
+  "description": "Installation check on RJTT runway 34R; paused, not a landing training scenario.",
+  "aircraft": "747-400",
+  "airport": "RJTT",
+  "runway": "34R",
+  "timeofday": "noon",
+  "wind": "0@0",
+  "on_ground": true,
+  "freeze": true
+}

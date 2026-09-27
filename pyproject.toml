@@ -1,0 +1,22 @@
+[project]
+name = "physical-ai-applied1-2026"
+version = "0.1.0"
+description = "Imitation learning for aircraft landing at Haneda"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jsbsim>=1.2,<2",
+    "numpy>=2,<3",
+    "torch>=2.7,<3",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

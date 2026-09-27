@@ -1,0 +1,15 @@
+{
+  "747-400": {
+    "repository": "https://github.com/LincolnWorks-FlightGear/747-400.git",
+    "commit": "67c9c066ac57c1a84d764c90e5d2133e6850eb36",
+    "directory": "747-400",
+    "sparse_path": null
+  },
+  "f-14b": {
+    "repository": "https://github.com/Zaretto/fg-aircraft.git",
+    "commit": "d6ca80195169a8a0f333270f289f1f52db2b638b",
+    "directory": "zaretto",
+    "sparse_path": "aircraft/f-14b",
+    "patch": "patches/f14-nasal-2024.patch"
+  }
+}

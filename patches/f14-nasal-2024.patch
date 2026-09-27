@@ -1,0 +1,32 @@
+diff --git a/aircraft/f-14b/Nasal/f14_globals.nas b/aircraft/f-14b/Nasal/f14_globals.nas
+index 79527fd..1009e25 100644
+--- a/aircraft/f-14b/Nasal/f14_globals.nas
++++ b/aircraft/f-14b/Nasal/f14_globals.nas
+@@ -1,6 +1,6 @@
+ ## Global constants ##
+-var true = 1;
+-var false = 0;
++# true and false are built-in constants in FlightGear 2024.1.
++
+ 
+ var deltaT = 1.0;
+ 
+diff --git a/aircraft/f-14b/Nasal/instruments.nas b/aircraft/f-14b/Nasal/instruments.nas
+index a32b17a..3a109d1 100644
+--- a/aircraft/f-14b/Nasal/instruments.nas
++++ b/aircraft/f-14b/Nasal/instruments.nas
+@@ -56,11 +56,11 @@ aircraft.data.add(VtcRadialDeg, TcModeSwitch);
+ 
+ # Compute local magnetic deviation.
+ var local_mag_deviation = func {
+-	var true = TrueHdg.getValue();
++	var true_heading = TrueHdg.getValue();
+ 	var mag = MagHdg.getValue();
+-    if (mag != nil and true != nil)
++    if (mag != nil and true_heading != nil)
+     {
+-        mag_dev = geo.normdeg( mag - true );
++        mag_dev = geo.normdeg( mag - true_heading );
+         if ( mag_dev > 180 ) mag_dev -= 360;
+         MagDev.setValue(mag_dev); 
+     }
