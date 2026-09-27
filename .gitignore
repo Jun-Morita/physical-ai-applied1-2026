@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Course originals: redistribution restricted by course materials.
+/materials/lectures/
