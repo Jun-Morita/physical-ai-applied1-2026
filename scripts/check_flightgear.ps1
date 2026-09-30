@@ -1,0 +1,43 @@
+param(
+    [ValidateSet("c172p", "747-400", "f-14b")][string]$ExpectedAircraft,
+    [int]$TimeoutSeconds = 120
+)
+$ErrorActionPreference = "Stop"
+$base = "http://127.0.0.1:8080/json"
+function Read-Value([string]$Path) {
+    (Invoke-RestMethod ($base + $Path) -TimeoutSec 5).value
+}
+$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+$ready = $false
+while ((Get-Date) -lt $deadline) {
+    try {
+        $scenery = Read-Value "/sim/sceneryloaded"
+        $fdm = Read-Value "/sim/signals/fdm-initialized"
+        if ($scenery -eq $true -and $fdm -eq $true) { $ready = $true; break }
+    } catch { }
+    Start-Sleep -Seconds 2
+}
+if (!$ready) { throw "FlightGear scenery/FDM not ready after $TimeoutSeconds seconds; inspect its log." }
+$aircraft = Read-Value "/sim/aircraft"
+if ($ExpectedAircraft -and $aircraft -ne $ExpectedAircraft) {
+    throw "Expected $ExpectedAircraft but running $aircraft"
+}
+$altitude = Read-Value "/position/altitude-ft"
+$ground = Read-Value "/position/ground-elev-ft"
+foreach ($value in @($altitude, $ground)) {
+    if ($null -eq $value -or [double]::IsNaN([double]$value) -or [double]::IsInfinity([double]$value) -or $value -eq -9999) {
+        throw "Altitude/ground elevation is not initialized"
+    }
+}
+[ordered]@{
+    aircraft = $aircraft
+    scenery_loaded = $scenery
+    fdm_initialized = $fdm
+    altitude_ft = $altitude
+    ground_elevation_ft = $ground
+    paused = Read-Value "/sim/freeze/master"
+    clock_paused = Read-Value "/sim/freeze/clock"
+    joystick = Read-Value "/input/joysticks/js/id"
+    joystick_config = Read-Value "/input/joysticks/js/source"
+    scope = "Initialization only; not a flight-performance or input-mapping test"
+} | ConvertTo-Json

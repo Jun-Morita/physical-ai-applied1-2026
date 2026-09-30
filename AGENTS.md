@@ -10,7 +10,8 @@
 
 ## 研修資料
 
-- 配布資料の原本は `materials/lectures/lecture-XX/` に保管し、内容・ファイル名は維持してください。
+- 応用編1の原本は `materials/lectures/lecture-XX/`、基礎編の原本は `materials/lectures/foundations/lecture-XX/`（最終課題資料は同階層の `final-project/`）に保管し、内容・ファイル名は維持してください。
+- 基礎編と応用編1の最終課題要件を混同しないでください。
 - 原本は資料の開示制限に基づきGit管理対象外です。提出コードに含めないでください。
 - 資料一覧は `materials/README.md`、要点は `docs/lecture-notes.md` を参照してください。
 - 要点を追記する際は出典ページや節を示し、教材の説明・模擬データ・実測結果・本課題への提案を区別してください。

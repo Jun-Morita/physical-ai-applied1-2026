@@ -1,0 +1,42 @@
+{
+  "description": "Unvalidated approach preset: tune and verify manually before collecting training data.",
+  "aircraft": "c172p",
+  "airport": "RJTT",
+  "runway": "34R",
+  "timeofday": "noon",
+  "wind": "0@0",
+  "on_ground": false,
+  "freeze": true,
+  "rate_hz": 20,
+  "telemetry_port": 5501,
+  "control_port": 5502,
+  "engine_count": 1,
+  "runway_geometry": {
+    "latitude": 35.539694,
+    "longitude": 139.805136,
+    "heading_deg": 330.02,
+    "elevation_ft": 3.0,
+    "length_m": 3360,
+    "width_m": 60
+  },
+  "geometry_source": "Installed RJTT.threshold.xml; elevation/length/width are provisional simulation values, not navigation data.",
+  "initial": {
+    "latitude": 35.467559315735414,
+    "longitude": 139.85627615906498,
+    "heading_deg": 330.02,
+    "altitude_ft": 1645.178596328614,
+    "airspeed_kt": 75
+  },
+  "controls": {
+    "flaps": 0.3333,
+    "throttle": 0.35,
+    "trim": 0
+  },
+  "evaluation": {
+    "min_rollout_seconds": 5,
+    "touchdown_max_m": 1200,
+    "max_sink_fps": 10,
+    "max_bank_deg": 8,
+    "stop_speed_kt": 30
+  }
+}

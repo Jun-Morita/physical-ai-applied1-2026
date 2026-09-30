@@ -8,7 +8,7 @@
 - Python 3.12.12、uv。依存パッケージの解決結果は `uv.lock` に固定する。
 
 ゲームパッドはWindows版FlightGearで認識・割当を確認する。WSLの `/dev/input` にデバイスが見えることは、この構成では必要ない。
-FlightGearとPythonの状態・操作入力の通信、両機と羽田の導入、リセット・記録は今後実装する。
+C172P・747-400・F-14Bの3機種を使用する。FlightGearとPythonの収録用通信、リセット・記録は今後実装する。
 FlightGear内のJSBSimとPython版JSBSimは別の実行環境であり、モデルや物理計算が自動的に同期するわけではない。
 
 ## WSL側
@@ -22,7 +22,7 @@ uv run --locked python scripts/check_environment.py
 
 PyTorchは公式CUDA 12.8インデックスから取得する。通常のwheel実行に必要なCUDAランタイムは依存関係に含まれる。
 診断スクリプトはGPU上で順伝播・逆伝播・パラメータ更新を行い、JSBSimの付属C172Pを1秒進める。
-C172Pはエンジンの動作確認専用であり、課題に採用する機体ではない。747-400とF-14Bの性能検証は別途必要。
+診断に使うJSBSim付属C172Pと、課題に使用するFlightGear同梱C172Pは区別する。3機種の操縦・性能検証は別途必要。
 
 ## Windows側
 
@@ -62,3 +62,5 @@ Bluetooth接続をUSBデバイスと同じ手順で渡せるとは限らない�
 - [WSLへのUSB接続](https://learn.microsoft.com/en-us/windows/wsl/connect-usb)
 
 - [F310公式クイックスタートガイド](https://www.logitech.com/assets/47879/f310-gamepad-quick-start-guide.pdf)
+
+C172Pも羽田34Rでの起動・初期化・短時間の物理計算を確認済み。`scripts/check_flightgear.ps1` で初期化状態を再確認できる。詳細と初期描画エラーの経過は [導入確認記録](simulator-validation.md) を参照。

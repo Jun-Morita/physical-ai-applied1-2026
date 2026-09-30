@@ -219,3 +219,10 @@ __marimo__/
 
 # Course originals: redistribution restricted by course materials.
 /materials/lectures/
+
+# Windows download metadata
+*:Zone.Identifier
+
+# Local flight recordings, policies and generated videos
+/datasets/
+/runs/

@@ -24,7 +24,7 @@ def main():
 
     fdm = jsbsim.FGFDMExec(None)
     fdm.set_debug_level(0)
-    # Bundled C172 is only an engine smoke test, not a selected project aircraft.
+    # The bundled JSBSim C172P is an engine smoke test, not validation of FlightGear C172P.
     if not fdm.load_model("c172p"):
         raise RuntimeError("Unable to load bundled JSBSim smoke-test aircraft")
     fdm.set_dt(1 / 120)
@@ -47,7 +47,7 @@ def main():
         "cuda_training_step": "passed",
         "jsbsim": jsbsim.__version__,
         "jsbsim_simulated_seconds": fdm.get_sim_time(),
-        "aircraft_validation": "747-400 and F-14B not yet tested",
+        "aircraft_validation": "FlightGear C172P, 747-400 and F-14B flight performance not validated by this check",
     }, indent=2))
 
 
