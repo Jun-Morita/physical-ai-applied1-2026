@@ -74,7 +74,7 @@ if ($config.initial) {
     }
 } elseif ($Mode -eq "ai") { throw "AI mode requires an approach scenario" }
 if ($config.on_ground) { $options += "--on-ground" }
-if ($config.freeze) { $options += "--enable-freeze" }
+if ($config.freeze) { $options += @("--enable-freeze", "--prop:/sim/freeze/master=true", "--prop:/sim/freeze/clock=true") }
 Write-Host "Aircraft: $($config.aircraft), airport: $($config.airport), runway: $($config.runway)"
 Write-Host "Log: $log"
 & $Executable @options

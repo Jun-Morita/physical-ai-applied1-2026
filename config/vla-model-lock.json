@@ -1,0 +1,5 @@
+{
+  "policy": {"repo_id": "lerobot/smolvla_base", "revision": "d9f33c94a60fb382c90dea2164c96845bd955e28"},
+  "backbone": {"repo_id": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct", "revision": "7b375e1b73b11138ff12fe22c8f2822d8fe03467"},
+  "lerobot": "0.4.3"
+}

@@ -1,12 +1,15 @@
 """Fetch pinned aircraft with Git into a user-selected directory (WSL)."""
+
 import argparse
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 
 def git(directory, *args):
-    return subprocess.check_output(["git", "-C", str(directory), *args], text=True).strip()
+    return subprocess.check_output(
+        ["git", "-C", str(directory), *args], text=True
+    ).strip()
 
 
 def apply_patch(directory, item):
@@ -16,7 +19,9 @@ def apply_patch(directory, item):
         patch = Path(__file__).resolve().parents[1] / patch_name
         expected = patch.read_text().strip()
     actual = git(directory, "diff", "--binary")
-    if git(directory, "diff", "--cached") or git(directory, "ls-files", "--others", "--exclude-standard"):
+    if git(directory, "diff", "--cached") or git(
+        directory, "ls-files", "--others", "--exclude-standard"
+    ):
         raise RuntimeError(f"Unexpected local changes: {directory}")
     if actual:
         if actual != expected:
@@ -30,13 +35,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destination", type=Path, required=True)
     args = parser.parse_args()
-    manifest = json.loads((Path(__file__).resolve().parents[1] / "config/aircraft-lock.json").read_text())
+    manifest = json.loads(
+        (Path(__file__).resolve().parents[1] / "config/aircraft-lock.json").read_text()
+    )
     args.destination.mkdir(parents=True, exist_ok=True)
     for name, item in manifest.items():
         dest = args.destination / item["directory"]
         if dest.exists():
             if git(dest, "rev-parse", "HEAD") != item["commit"]:
-                raise RuntimeError(f"Existing checkout differs; preserve and inspect it: {dest}")
+                raise RuntimeError(
+                    f"Existing checkout differs; preserve and inspect it: {dest}"
+                )
             apply_patch(dest, item)
             print(f"Already installed: {name}", flush=True)
             continue

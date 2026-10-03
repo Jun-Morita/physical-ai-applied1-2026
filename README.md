@@ -24,14 +24,30 @@ Physical AI 2026 応用編1の最終課題として、**人のゲームパッド
 
 - 利用可能な環境：WSL2 / Ubuntu 22.04、NVIDIA RTX 3060（12GB）、WindowsにUSB接続したLogicool F310。
 - Pythonの環境構築・依存関係管理：**uv**。
-- シミュレータ構成：Windows版FlightGearで描画・ゲームパッド入力・機体システムを扱い、WSL側のPythonで学習します。収録・AI操縦はWindowsのPythonからUDPで行います。実通信・操縦の検証はこれからです。
-- データ収集：ゲームパッドの操縦入力と機体状態を時刻を揃えて記録します。
-- 学習方法：手動操縦データによる模倣学習を軸にします。AIの入力は数値状態17値とし、画像入力は今後の拡張候補です。
+- シミュレータ構成：Windows版FlightGearで描画・ゲームパッド入力・機体システムを扱い、WSL側のPythonで学習します。収録・AI操縦はWindowsのPythonからUDPで行います。C172PでのUDP状態取得・VLA操作反映・短時間録画を確認済みです。着陸性能の検証はこれからです。
+- データ収集：ゲームパッドの操縦入力・機体状態・画像をシミュレーション時刻とともに記録します。画像と状態は厳密な同時観測ではなく、学習時に時刻差を検査します。
+- 学習方法：手動操縦データによる模倣学習を軸にします。数値状態17値のMLPに加え、画像・指示・状態を使うSmolVLAの追加学習と操縦を扱います。
+
+## 実行順と手順書
+
+主経路は **画像付き手動収録 → 学習前のVLA操縦 → 追加学習 → 学習後の操縦・録画・比較** です。まずC172Pで一連の流れを検証し、747-400・F-14Bは別々に収録・学習します。
+
+- [VLAパイプライン](docs/vla-pipeline.md)：主経路の完全なコマンドとデータの条件。
+- [着陸パイプライン](docs/landing-pipeline.md)：Windowsの準備、収録の確認・採否、数値入力MLPの比較用経路。
+- [コード点検記録](docs/code-review.md)：今回修正した不具合と検証結果。
 
 ## 環境構築
 
 構成は **Windows：FlightGear・F310入力／WSL2 Ubuntu：Python・学習** です。
 WindowsにUSB接続したF310をWSLに転送する必要はありません。
+
+| 用途 | 実行環境 | 依存関係の管理 |
+| --- | --- | --- |
+| シミュレータ・収録・操作送信 | Windows、Python 3.12以降（確認済み3.13）、FlightGear、FFmpeg | Pythonは標準ライブラリのみ |
+| 数値入力MLP・共通テスト | Ubuntu、Python 3.12.12、PyTorch 2.11.0+cu128 | ルートの `pyproject.toml` / `uv.lock` |
+| SmolVLAの学習・推論ワーカー | Ubuntu、Python 3.12、LeRobot 0.4.3、PyTorch 2.7.1+cu128 | `environments/vla/pyproject.toml` / `uv.lock` |
+
+VLAは専用環境のため、ルートの `uv sync --locked` だけでは導入されません。後述のVLA環境構築も実行します。
 
 ### 1. 前提条件
 
@@ -81,7 +97,7 @@ FlightGear付属の診断ツールでも認識を確認できます。PowerShell
 
 この環境では `Controller (Gamepad F310)` として検出し、軸値を読み取れました。
 F310のXInput／DirectInputモードを切り替えると割当が変わる可能性があるため、現在認識されているモードで設定します。
-実際のスティック操作との対応、3機種の操縦、WindowsとWSL間の通信は未検証です。
+実際のスティック操作との対応と3機種の着陸操縦は未検証です。WindowsとWSL間の共有ディレクトリによるVLA推論通信は確認済みです。
 
 詳細な確認状況と参考資料は [環境構築メモ](docs/environment-setup.md) を参照してください。
 
@@ -123,13 +139,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.p
 ```
 
 `config/scenarios/*-rjtt-check.json` は羽田34R・昼間・無風・地上・一時停止で始める導入確認用設定です。
-34Rは初期確認用であり、着陸学習に使う滑走路の最終決定ではありません。
+着陸用プリセットも34Rを使用します。シナリオを変更すれば別の滑走路を扱えます。
 別の設定は `-Scenario <JSONファイル>` で指定できます。FlightGearの保存場所は `-FlightGearRoot`、実行ファイルは `-Executable` で変更できます。
 
 取得済みカスタム風景を優先し、TerraSync（`https://terrasync.b-cdn.net`）も有効にします。初回は取得待ちがあり、取得後に再起動が必要な場合があります。
 風景データは更新されるため、機体と異なり現段階では完全な版固定をしていません。
 実行ログとシナリオはWindows側の `FlightGear/Logs/physical-ai/` に保存します。
-診断用HTTPサーバーをWindowsの `127.0.0.1:8080` に限定して有効にします。WSLとの通信経路は別途確認します。
+診断用HTTPサーバーをWindowsの `127.0.0.1:8080` に限定して有効にします。Windowsの収録プロセスがHTTPを使い、WSLのVLAワーカーとは共有ディレクトリで通信します。
 
 起動後の初期化は、別のWindows PowerShellで確認できます。`-ExpectedAircraft` は起動した機種に合わせます。
 
@@ -151,7 +167,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/set_simulation_pau
 747は一時停止で初回起動すると脚高度が未初期化になり、自動飛行スクリプトの警告が出ます。
 地形読込後に一度数秒再開すると初期化されます。この状態から再び停止できます。飛行性能の検証はこれからです。
 
-## 収録・模倣学習・AI操縦のコード
+## 数値入力MLPによる比較用の経路
 
 データ取得前に一連のコードを作成しました。実行する順番とWindows / Ubuntuのコマンドは **[着陸パイプライン手順](docs/landing-pipeline.md)** にまとめています。
 
@@ -174,6 +190,53 @@ uv run --locked python -m unittest discover -s tests -v
 
 現在の進入速度・フラップ・トリムは仮設定です。3機種で初期状態と信号を確認してから収録します。テスト用の模擬データを学習実績や着陸成功として扱いません。
 
+## VLAで学習前後を比較する
+
+2026-10-03にSmolVLAを採用しました。**画像付き手動収録 → 追加学習前のVLA操縦 → 手動データで追加学習 → 学習後のVLA操縦・録画・比較**のコードと手順を [VLAパイプライン](docs/vla-pipeline.md) にまとめています。まずC172Pで検証します。
+
+Ubuntu側の専用環境を、リポジトリ直下で構築します。
+
+```bash
+uv sync --project environments/vla --locked
+uv run --project environments/vla --locked python -m landing.vla prepare \
+  --scenario config/scenarios/c172p-rjtt-34r-approach.json \
+  --output runs/vla/c172p-base
+uv run --project environments/vla --locked python -m landing.vla check \
+  --model runs/vla/c172p-base --backward
+```
+
+専用のpyproject.toml・uv.lockでLeRobot 0.4.3とPyTorch 2.7.1を固定し、既存MLP環境を保持します。`check` は模擬入力での診断です。Windowsの `record --images`、VLAワーカー、`fly --vla-bridge`、追加学習・比較の完全なコマンドは上記手順書にあります。
+
+最初のVLA実装では推論中だけ物理計算を停止します。リアルタイム操縦ではなく、動画にも推論待ちが含まれます。事前学習済みモデルを飛行操作に対応させるため、学習前から着陸できることは想定していません。実データによる性能評価はこれからです。 RTX 3060での模擬入力による追加学習・保存・再読込と、実FlightGearへのVLA操作送信・短時間のMP4保存は確認済みです。
+
+## コード構成と点検方法
+
+| ファイル | 役割 |
+| --- | --- |
+| `landing/core.py` | 通信スキーマ、状態・操作の変換、着陸の参考判定 |
+| `landing/session.py` | Windowsでの収録、AI操縦、確認・ラベル付け |
+| `landing/vision.py` | 画像取得と共有ディレクトリ経由の推論通信 |
+| `landing/recording.py` | 録画の終了処理とエラー記録 |
+| `landing/storage.py` | JSON/JSONLの読み書き、ファイルのハッシュ計算 |
+| `landing/data.py` | MLP/VLA共通のデータ検査と画像・操作の対応付け |
+| `landing/train.py` / `landing/vla.py` | MLP / SmolVLAの学習・モデル準備・推論 |
+| `landing/compare.py` | 同一条件の学習前後の試行比較 |
+| `tests/` | 模擬データ・通信による回帰テスト |
+
+リポジトリ直下のUbuntuで実行します。
+
+```bash
+uvx --from ruff==0.15.7 ruff check landing tests scripts
+uvx --from ruff==0.15.7 ruff format --check landing tests scripts
+uv run --locked python -m unittest discover -s tests -v
+# VLA環境とベースモデルを準備済みの場合：合成入力の学習・保存・再読込
+uv run --project environments/vla --locked python scripts/check_vla_training.py --base runs/vla/c172p-base
+```
+
+短い接続確認では `record` / `fly` に `--purpose diagnostic` を付けます。診断記録は学習・成績比較の対象外です。通常の試行は既定の `evaluation` で収録し、失敗・中断も比較に含めます。空の記録や録画終了エラーは `incomplete` として保存します。
+
+学習前に時刻の逆行・重複、非有限値、クラッシュ、操作範囲、固定操作設定を検査します。飛行のコピーは保存名や受信時刻だけを変更しても重複として拒否します。採用する手動飛行には人による成功確認が必要です。
+
 ## 現在の状況と開発予定
 
 uvの依存関係を固定し、Windows版FlightGear本体の導入とF310の認識確認を行いました。
@@ -190,7 +253,7 @@ Python環境の構築と診断は完了しました。RTX 3060（12GB）上のPy
 
 747-400・F-14Bを取得し、JSBSim飛行モデルと羽田の地形の読み込みを確認しました。C172Pも羽田34Rで起動し、地形・飛行モデルの初期化と短時間の物理計算を確認済みです。F-14のNasal互換性問題はパッチで修正済みです。
 [導入確認と既知の問題](docs/simulator-validation.md) に互換性パッチと警告を記録しています。
-収録・確認・模倣学習・AI操縦・録画のコードを追加しました。模擬データで検証しており、実通信・手動操縦データの取得・実データによる学習・AI着陸は未実施です。
+収録・確認・模倣学習・AI操縦・録画のコードを追加しました。自動テスト20件と、C172PでのVLA操作反映・録画を確認済みです。手動の成功飛行データ取得、実データによる追加学習、AIの着陸評価は未実施です。
 
 1. 3機種と羽田で、ゲームパッド設定・操縦・着陸を確認する。
 2. 追加した進入シナリオ、再起動による初期化、収録・制御・録画コードを実機で確認する。

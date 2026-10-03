@@ -1,7 +1,9 @@
 """Generate FlightGear protocol XML from the recorded schema."""
-from pathlib import Path
+
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from landing.core import FIELDS
 
@@ -9,7 +11,11 @@ from landing.core import FIELDS
 def build(direction, nodes):
     root = ET.Element("PropertyList")
     io = ET.SubElement(ET.SubElement(root, "generic"), direction)
-    for name, value in (("binary_mode", "false"), ("var_separator", ","), ("line_separator", "newline")):
+    for name, value in (
+        ("binary_mode", "false"),
+        ("var_separator", ","),
+        ("line_separator", "newline"),
+    ):
         ET.SubElement(io, name).text = value
     for name, node in nodes.items():
         chunk = ET.SubElement(io, "chunk")
@@ -26,6 +32,8 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parents[1] / "config/protocols"
     (root / "physical-ai-state.xml").write_text(build("output", FIELDS))
     nodes = {k: FIELDS[k] for k in ("aileron", "elevator", "rudder")}
-    nodes.update({f"throttle{i}": f"/controls/engines/engine[{i}]/throttle" for i in range(4)})
+    nodes.update(
+        {f"throttle{i}": f"/controls/engines/engine[{i}]/throttle" for i in range(4)}
+    )
     nodes.update({k: FIELDS[k] for k in ("brake_left", "brake_right", "trim")})
     (root / "physical-ai-action.xml").write_text(build("input", nodes))
