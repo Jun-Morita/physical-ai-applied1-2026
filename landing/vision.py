@@ -8,7 +8,14 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from .core import ACTIONS, FEATURES, clamp_actions, digest, features, read_json
+from .core import (
+    ACTIONS,
+    FEATURES,
+    clamp_actions,
+    features,
+    read_json,
+    scenario_hash,
+)
 from .storage import atomic_json as atomic_json
 
 STATE_SCALE = [
@@ -30,9 +37,7 @@ STATE_SCALE = [
     30,
     1,
 ]
-INSTRUCTION = (
-    "Land on runway 34R at Haneda, keep the aircraft on the runway, and slow down."
-)
+INSTRUCTION = "Land on runway 34R at Haneda and keep the aircraft on the runway."
 
 
 def capture(path, get_time, timeout=5):
@@ -69,7 +74,7 @@ class BridgePolicy:
         info = read_json(self.directory / "ready.json")
         self.model = info["manifest"]
         if (
-            self.model["scenario_hash"] != digest(scenario)
+            self.model["scenario_hash"] != scenario_hash(scenario)
             or self.model["instruction"] != instruction
         ):
             raise ValueError("VLA worker scenario/instruction mismatch")
@@ -84,7 +89,7 @@ class BridgePolicy:
         request = {
             "worker_id": self.worker_id,
             "session_id": self.session_id,
-            "scenario_hash": digest(scenario),
+            "scenario_hash": scenario_hash(scenario),
             "features": features(state, scenario),
             "image": base64.b64encode(Path(image).read_bytes()).decode("ascii"),
         }

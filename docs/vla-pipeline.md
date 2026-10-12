@@ -8,9 +8,9 @@ WindowsのFlightGearからJPEG画像・数値状態・操作を収録し、Ubunt
 
 最初の実装は**推論中にFlightGearを一時停止する方式**。通常の物理計算を再開して0.2シミュレーション秒以上進むと、再び止めて次の操作を求める。実時間20 HzのVLA操縦ではない。収録した動画には推論待ちの停止が含まれ、これを隠してリアルタイム性能と報告しない。記録には推論時間と `execution_mode=paused_inference` を残す。
 
-SmolVLAの重みはロボット由来で、飛行操縦の知識を保証しない。事前学習時の操作次元を機体の7操作に対応させたものを `base_adapted` と呼び、追加学習後の `finetuned` と比較する。学習前の着陸成功を前提にしない。
+SmolVLAの重みはロボット由来で、飛行操縦の知識を保証しない。事前学習時の操作次元を機体の4操作に対応させたものを `base_adapted` と呼び、追加学習後の `finetuned` と比較する。学習前の着陸成功を前提にしない。
 
-数値入力は既存の17状態。固定の物理スケールで正規化し、7操作は各範囲を[-1, 1]に変換する。画像はRGBで縦横比を保って256×256へ余白付きで変換する。SmolVLAには1画像・指示・状態を渡し、1ステップの操作を学習・実行する。元の50ステップチャンク構成とは異なる課題用の設定。逆推力やスポイラー等は現状の操作出力に含めない。
+数値入力は既存の17状態。固定の物理スケールで正規化し、4操作は各範囲を[-1, 1]に変換する。画像はRGBで縦横比を保って256×256へ余白付きで変換する。SmolVLAには1画像・指示・状態を渡し、1ステップの操作を学習・実行する。元の50ステップチャンク構成とは異なる課題用の設定。逆推力やスポイラー等は現状の操作出力に含めない。
 
 ## 1. VLA専用環境とベースモデルの準備（Ubuntu）
 
@@ -33,11 +33,11 @@ uv run --project environments/vla --locked python -m landing.vla check \
 
 ## 2. 画像付きの手動飛行データを取得（Windows）
 
-既存の[着陸パイプライン](landing-pipeline.md)に従い、同じ初期状態とカメラ視点を使う。F310の割当、エンジン・脚・フラップ・開始状態を先に確認する。手動モードでFlightGearを起動し、別のPowerShellで収録する。収録・AI実行の開始前に、停止中の機体へシナリオのフラップ・脚・トリム・スロットルを再適用する（機体の初期化による上書きへの対応）。エンジン運転や重量・燃料をこの処理で保証するものではない。両方のターミナルはリポジトリ直下を作業場所とする。
+既存の[着陸パイプライン](landing-pipeline.md)に従い、同じ初期状態とカメラ視点を使う。F310の割当、エンジン・脚・フラップ・開始状態を先に確認する。手動モードでFlightGearを起動し、別のPowerShellで収録する。収録・AI実行の開始前に、機体の起動タイマーを物理計算停止中に消化してから、シナリオのフラップ・脚・トリム・スロットルを再適用する（機体の初期化による上書きへの対応）。フラップは収録中も固定する。エンジン運転や重量・燃料をこの処理で保証するものではない。両方のターミナルはリポジトリ直下を作業場所とする。
 
 ```powershell
 Set-Location '\\wsl.localhost\Ubuntu\home\jun\physical-ai-applied1-2026'
-powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Scenario config/scenarios/c172p-rjtt-34r-approach.json -Mode human
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Scenario config/scenarios/c172p-rjtt-34r-approach.json -Mode human -Seed 1
 ```
 
 ```powershell
@@ -46,7 +46,7 @@ py -3 -m landing.session inspect datasets/c172p-visual/flight-001
 py -3 -m landing.session label datasets/c172p-visual/flight-001 --outcome success --note "動画・画像と操縦を確認。初期状態、カメラ、脚・フラップの変更なし。"
 ```
 
-着陸・減速後に収録側でCtrl+Cを押す。失敗や調整の飛行は `failure` / `exclude` とする。各飛行には新しい保存先を使う。
+接地して規定時間滑走すると収録は自動で終了する。途中でやめる場合は収録側でCtrl+Cを押す。失敗や調整の飛行は `failure` / `exclude` とする。各飛行には新しい保存先を使う。
 
 `frames/` にFlightGear自身のHTTPスクリーンショットを保存し、各フレームの取得前後のシミュレーション時刻、所要時間、画像ハッシュ、視点番号を `samples.jsonl` に記録する。画像とFDM状態は厳密に同時の観測ではない。画像取得中は手動飛行を止めないので受信間隔が広がる可能性がある。通信・描画・画像取得時間を実機で確認する。
 
@@ -66,7 +66,7 @@ uv run --project environments/vla --locked python -m landing.vla serve \
 `VLA worker ready` を待つ。Windows側ではFlightGearを終了してAIモードで同じシナリオを起動する。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Scenario config/scenarios/c172p-rjtt-34r-approach.json -Mode ai
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Scenario config/scenarios/c172p-rjtt-34r-approach.json -Mode ai -Seed 1000
 ```
 
 別のWindows PowerShellで実行する。
@@ -90,7 +90,7 @@ uv run --project environments/vla --locked python -m landing.vla train \
 
 最低3飛行・各10組以上の有効な画像／操作ペアが必要。これはコードの受付条件であり、十分なデータ量ではない。成功確認済みの手動飛行だけを使い、飛行単位で約20%を検証用に分ける。AIの試行結果や診断記録を教師データへ混ぜない。状態・画像内容による重複検査を行い、受信時刻や画像ファイル名だけを変えたコピーも拒否する。
 
-前処理では画像取得区間が0.25秒以内、直前の状態が画像取得開始から0.15秒以内のものを使う。画像取得完了以後で最初に得られた操作を教師とし、その遅れが0.1秒を超える組を除外する。停止をまたぐペアを除外する。クラッシュを含む飛行は拒否し、画像ハッシュ、時刻順序、脚・フラップ固定、対称推力、視点の一貫性と操作範囲を検査する。視点番号が不明な飛行も拒否する。各閾値は初期設定であり、実測で見直す。
+自動着陸（`source: expert`）の飛行は、画像取得の間シミュレーションを一時停止するため、画像・状態・その状態に対してお手本が出した操作（`command`）が同じ瞬間のものになる。この3つをそのまま1組とする（MLPの学習でも、各行の状態とお手本の操作を組にする）。人の飛行は一時停止しないので、以下の時刻合わせを使う。前処理では画像取得区間が0.25秒以内、直前の状態が画像取得開始から0.15秒以内のものを使う。画像取得完了以後で最初に得られた操作を教師とし、その遅れが0.1秒を超える組を除外する。停止をまたぐペアを除外する。クラッシュを含む飛行は拒否し、画像ハッシュ、時刻順序、脚・フラップ固定、対称推力、視点の一貫性と操作範囲を検査する。視点番号が不明な飛行も拒否する。各閾値は初期設定であり、実測で見直す。
 
 LeRobotのSmolVLA本体を使うが、学習データは本課題のJSONL/JPEGを読む独自のPyTorch学習ループ。LeRobotDataset変換や `lerobot-train` を使用する構成ではない。画像エンコーダ等の凍結設定はSmolVLAの設定を引き継ぐ。まずbatch size 1からGPU使用量を確認する。
 

@@ -14,6 +14,14 @@ from landing.train import load_episodes, train
 
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO = core.read_json(ROOT / "config/scenarios/c172p-rjtt-34r-approach.json")
+START = core.initial_state(SCENARIO, 0)
+NO_DAMAGE = dict.fromkeys(SCENARIO["damage_properties"], False)
+START_PROPS = {
+    "/sim/physical-ai/seed": 0,
+    "/sim/physical-ai/start-profile": "nominal",
+    "/position/latitude-deg": START["latitude"],
+    "/position/longitude-deg": START["longitude"],
+}
 
 
 def state(t=0):
@@ -45,9 +53,7 @@ class PipelineTests(unittest.TestCase):
         for bad in (b"1,2", wire({**s, "time": math.nan})):
             with self.assertRaises(ValueError):
                 core.packet(bad)
-        values = list(
-            map(float, core.action_packet([2, -2, 0, 0.4, 0, 0, 0], 2).split(b","))
-        )
+        values = list(map(float, core.action_packet([2, -2, 0, 0.4], 2).split(b",")))
         self.assertEqual(values[:3], [1, -1, 0])
         self.assertEqual(values[3:7], [0.4, 0.4, 0, 0])
 
@@ -56,9 +62,108 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(core.evaluate(rows, SCENARIO)["candidate_success"])
         for row in rows[2:]:
             row["state"]["wow"] = 1
-        self.assertTrue(core.evaluate(rows, SCENARIO)["candidate_success"])
+        self.assertTrue(core.evaluate(rows, SCENARIO, NO_DAMAGE)["candidate_success"])
         rows[-1]["state"]["longitude"] += 0.01
-        self.assertFalse(core.evaluate(rows, SCENARIO)["candidate_success"])
+        self.assertFalse(core.evaluate(rows, SCENARIO, NO_DAMAGE)["candidate_success"])
+
+    def test_seeded_start_is_reproducible_and_bounded(self):
+        r, start = SCENARIO["runway_geometry"], SCENARIO["initial"]
+        variation = SCENARIO["initial_variation"]
+        nominal = core.initial_state(SCENARIO, 0)
+        self.assertTrue(all(v == 0 for v in nominal["offsets"].values()))
+        along, cross = core.runway_position(nominal, r)
+        self.assertAlmostEqual(along, -start["distance_m"], places=3)
+        self.assertAlmostEqual(cross, 0, places=3)
+        starts = [core.initial_state(SCENARIO, seed) for seed in range(1, 50)]
+        self.assertEqual(starts[0], core.initial_state(SCENARIO, 1))
+        self.assertGreater(len({round(s["altitude_ft"], 6) for s in starts}), 40)
+        for s in starts:
+            self.assertTrue(
+                all(abs(s["offsets"][k]) <= variation[k] for k in variation)
+            )
+            self.assertAlmostEqual(
+                core.runway_position(s, r)[1], s["offsets"]["cross_m"], places=3
+            )
+        for bad in (-1, 1.5, True):
+            with self.assertRaises(ValueError):
+                core.initial_state(SCENARIO, bad)
+
+    def test_training_start_profiles(self):
+        r = SCENARIO["runway_geometry"]
+        nominal = core.initial_state(SCENARIO, 0)
+        g = core.approach_guidance({**state(), **nominal}, SCENARIO)
+        for name, p in SCENARIO["training_starts"].items():
+            s = core.initial_state(SCENARIO, 0, name)
+            along, _ = core.runway_position(s, r)
+            scale = p["distance_scale"]
+            self.assertAlmostEqual(along, -SCENARIO["initial"]["distance_m"] * scale, 3)
+            # Closer starts stay on the nominal start's path to the aiming point.
+            near = core.approach_guidance({**state(), **s}, SCENARIO)
+            self.assertAlmostEqual(near["height_error_ft"], g["height_error_ft"], 0)
+            for seed in range(1, 30):
+                offsets = core.initial_state(SCENARIO, seed, name)["offsets"]
+                limit = p["variation"]["height_ft"] * scale
+                self.assertLessEqual(abs(offsets["height_ft"]), limit)
+        # Profiles widen data collection only: the task identity is unchanged.
+        bare = {k: v for k, v in SCENARIO.items() if k != "training_starts"}
+        self.assertEqual(core.scenario_hash(bare), core.scenario_hash(SCENARIO))
+        with self.assertRaisesRegex(ValueError, "nominal start"):
+            core.initial_state(SCENARIO, 1000, "wide")
+        with self.assertRaisesRegex(ValueError, "Unknown"):
+            core.initial_state(SCENARIO, 1, "narrow")
+
+    def test_guidance_damage_and_summary(self):
+        start = {**state(), **core.initial_state(SCENARIO, 0)}
+        start["altitude_ft"] = START["altitude_ft"]
+        g = core.approach_guidance(start, SCENARIO)
+        self.assertAlmostEqual(g["distance_m"], SCENARIO["initial"]["distance_m"], 0)
+        # The preset starts on the 3 degree path to the 400 m aiming point (rounded to 1 ft).
+        self.assertAlmostEqual(g["height_error_ft"], 0.4, 0)
+        self.assertIn("経路より", session.guidance_line(start, SCENARIO))
+        self.assertIn("滑走路上", session.guidance_line(state(), SCENARIO))
+        rows = [{"state": state(i)} for i in range(10)]
+        for row in rows[2:]:
+            row["state"]["wow"] = 1
+        broken = {"/fdm/jsbsim/gear/unit[0]/broken": True}
+        result = core.evaluate(rows, SCENARIO, broken)
+        self.assertFalse(result["checks"]["no_damage"])
+        self.assertFalse(result["candidate_success"])
+        # Unread damage is a failure, not a pass.
+        self.assertFalse(core.evaluate(rows, SCENARIO)["checks"]["no_damage"])
+        text = session.summary(
+            {
+                "status": "complete",
+                "end_reason": "rollout_complete",
+                "rows": 10,
+                "control_resets": [],
+                "evaluation": result,
+            }
+        )
+        self.assertIn("NG  no_damage", text)
+
+    def test_touchdown_quality_checks(self):
+        def landing(index=2, **values):
+            rows = [{"state": state(i)} for i in range(10)]
+            for row in rows[2:]:
+                row["state"]["wow"] = 1
+            rows[index]["state"].update(values)
+            return core.evaluate(rows, SCENARIO, NO_DAMAGE)
+
+        self.assertTrue(all(landing(heading_deg=333)["checks"].values()))
+        # Touchdown agl is 97 ft in this fixture: a 0.5 ft skip is not a bounce.
+        skip = landing(4, wow=0, agl_ft=97.5)
+        self.assertTrue(skip["checks"]["no_bounce"])
+        self.assertAlmostEqual(skip["bounce_height_ft"], 0.5)
+        # A floating flare reads a few mm/s of climb at contact; a real climb fails.
+        self.assertTrue(landing(1, down_fps=-0.05)["checks"]["sink_rate"])
+        for result, check in [
+            (landing(pitch_deg=-2), "main_gear_first"),
+            (landing(heading_deg=340), "heading"),
+            (landing(1, down_fps=-1), "sink_rate"),
+            (landing(4, wow=0, agl_ft=100), "no_bounce"),
+        ]:
+            self.assertFalse(result["checks"][check], check)
+            self.assertFalse(result["candidate_success"])
 
     def test_training_split_and_export(self):
         # Synthetic inputs exercise implementation only; never saved as human demonstrations.
@@ -114,6 +219,8 @@ class PipelineTests(unittest.TestCase):
                 "outcome": "success",
                 "status": "complete",
                 "scenario": SCENARIO,
+                "initial": {"seed": 1},
+                "evaluation": {"candidate_success": True},
             }
             (path / "metadata.json").write_text(json.dumps(meta))
             rows = [{"state": state(i * 0.05)} for i in range(30)]
@@ -141,7 +248,8 @@ class PipelineTests(unittest.TestCase):
             "/sim/signals/fdm-initialized": True,
             "/sim/freeze/master": True,
             "/sim/freeze/clock": True,
-            "/sim/physical-ai/scenario-hash": core.digest(SCENARIO),
+            "/sim/physical-ai/scenario-hash": core.scenario_hash(SCENARIO),
+            **START_PROPS,
             "/sim/input/no-joystick-input": True,
             "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
             "/controls/gear/gear-down-command": True,
@@ -152,11 +260,11 @@ class PipelineTests(unittest.TestCase):
             "actions": core.ACTIONS,
             "mean": [0] * len(core.FEATURES),
             "std": [1] * len(core.FEATURES),
-            "scenario_hash": core.digest(SCENARIO),
+            "scenario_hash": core.scenario_hash(SCENARIO),
             "layers": [
                 {
                     "weight": [[0] * len(core.FEATURES) for _ in core.ACTIONS],
-                    "bias": [0, 0, 0, 0.4, 0, 0, 0],
+                    "bias": [0, 0, 0, 0.4],
                 }
             ],
         }
@@ -191,7 +299,7 @@ class PipelineTests(unittest.TestCase):
             )
             session.run(args)
             sock.return_value.sendto.assert_called_once_with(
-                core.action_packet([0, 0, 0, 0.4, 0, 0, 0], 1), ("127.0.0.1", 5502)
+                core.action_packet([0, 0, 0, 0.4], 1), ("127.0.0.1", 5502)
             )
             process.return_value.communicate.assert_called_once_with(b"q\n", timeout=15)
             pause.assert_called_with(True)
@@ -199,9 +307,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(
                 (meta["source"], meta["status"], meta["rows"]), ("ai", "complete", 1)
             )
-            self.assertEqual(
-                session.rows_at(args.output)[0]["command"], [0, 0, 0, 0.4, 0, 0, 0]
-            )
+            self.assertEqual(session.rows_at(args.output)[0]["command"], [0, 0, 0, 0.4])
 
     def test_timeout_pauses_and_marks_incomplete(self):
         properties = {
@@ -210,7 +316,8 @@ class PipelineTests(unittest.TestCase):
             "/sim/signals/fdm-initialized": True,
             "/sim/freeze/master": True,
             "/sim/freeze/clock": True,
-            "/sim/physical-ai/scenario-hash": core.digest(SCENARIO),
+            "/sim/physical-ai/scenario-hash": core.scenario_hash(SCENARIO),
+            **START_PROPS,
             "/sim/input/no-joystick-input": False,
             "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
             "/controls/gear/gear-down-command": True,

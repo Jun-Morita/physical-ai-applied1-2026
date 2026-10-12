@@ -9,8 +9,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .core import ACTIONS, FEATURES, SCHEMA, Policy, digest, features
-from .data import demonstration_action, episode_digest, reviewed_episode
+from .core import ACTIONS, FEATURES, SCHEMA, Policy, features, scenario_hash
+from .data import command_action, demonstration_action, episode_digest, reviewed_episode
 
 
 def load_episodes(paths):
@@ -20,22 +20,29 @@ def load_episodes(paths):
         path = Path(path)
         meta, rows = reviewed_episode(path)
         scenario = meta["scenario"]
-        key = digest(scenario)
+        key = scenario_hash(scenario)
         if identity is not None and identity != key:
             raise ValueError("Train one aircraft/scenario per policy")
         identity = key
         x, y = [], []
-        for previous, current in zip(rows, rows[1:]):
-            a, b = previous["state"], current["state"]
-            dt = b["time"] - a["time"]
-            if not 0 < dt <= 1.5 / scenario["rate_hz"]:
-                continue
-            if any(s["paused"] or s["clock_paused"] for s in (a, b)):
-                continue
-            demonstration_action(a, scenario)
-            action = demonstration_action(b, scenario)
-            x.append(features(a, scenario))
-            y.append(action)
+        if meta["source"] == "expert":
+            # The expert's command for each telemetry row is the label.
+            for row in rows:
+                if row.get("command") is not None:
+                    x.append(features(row["state"], scenario))
+                    y.append(command_action(row, scenario))
+        else:
+            # Human controls take effect on the next sample.
+            for previous, current in zip(rows, rows[1:]):
+                a, b = previous["state"], current["state"]
+                dt = b["time"] - a["time"]
+                if not 0 < dt <= 1.5 / scenario["rate_hz"]:
+                    continue
+                if any(s["paused"] or s["clock_paused"] for s in (a, b)):
+                    continue
+                demonstration_action(a, scenario)
+                x.append(features(a, scenario))
+                y.append(demonstration_action(b, scenario))
         if len(x) < 20:
             raise ValueError(f"{path}: fewer than 20 valid adjacent pairs")
         if not np.isfinite(x).all() or not np.isfinite(y).all():
@@ -47,6 +54,7 @@ def load_episodes(paths):
                 "x": x,
                 "y": y,
                 "scenario": scenario,
+                "source": meta["source"],
             }
         )
     if len({e["hash"] for e in episodes}) != len(episodes):
@@ -114,7 +122,7 @@ def train(episodes, output, epochs=100, seed=42, device="auto"):
         "mean": mean.tolist(),
         "std": std.tolist(),
         "scenario": episodes[0]["scenario"],
-        "scenario_hash": digest(episodes[0]["scenario"]),
+        "scenario_hash": scenario_hash(episodes[0]["scenario"]),
         "layers": [
             {
                 "weight": layer.weight.detach().cpu().tolist(),
@@ -140,7 +148,11 @@ def train(episodes, output, epochs=100, seed=42, device="auto"):
         ],
         "train_pairs": len(x),
         "validation_pairs": len(vx),
-        "target": "next telemetry sample controls",
+        "target": {
+            "expert": "expert command for the same telemetry sample",
+            "human": "next telemetry sample controls",
+        },
+        "sources": sorted({episodes[i].get("source", "human") for i in fit + val}),
         "limitation": "Validation control error does not establish closed-loop landing success.",
     }
     (output / "training.json").write_text(json.dumps(report, indent=2))

@@ -8,8 +8,9 @@
 - Ubuntu / WSL：uvで管理するPyTorchによる `landing.train`。RTX 3060を使用可能。
 - UDPはWindowsのループバック内で完結。状態は5501番、AI制御は5502番、20 Hz。HTTP 8080番は状態確認・一時停止に使用する。
 - `config/protocols/` のXMLとPythonの列順は `scripts/generate_protocols.py` で同期する。スキーマを変えたら再生成し、FlightGearを再起動する。異なるスキーマの収録を混ぜない。
-- `config/scenarios/*-rjtt-34r-approach.json` は3機種の仮の進入プリセット。5 NM手前、3度相当の高さ、昼間・無風。開始速度、トリム、フラップ、エンジン・燃料・重量は機種ごとの確認・調整が必要。自動操縦は切る。
-- 滑走路進入端の緯度経度・方向は取得済みRJTTシーナリーの `RJTT.threshold.xml` に由来する。標高・長さ・幅と評価閾値は暫定値。評価指標として使う前に描画・接地面と照合する。
+- `config/scenarios/*-rjtt-34r-approach.json` は3機種の仮の進入プリセット。開始位置は滑走路基準（進入端手前の距離 `distance_m`、横ずれ `cross_m`、滑走路面からの高さ `height_ft`）で書く。C172Pは2 NM手前・高さ706 ft（進入端から400 mの接地目標点に向かう3度経路上）、747-400とF-14Bは5 NM手前。昼間・無風。
+- 丸覚えを防ぐため、C172Pは `initial_variation` の範囲（横±100 m、高さ±60 ft、機首方位±5度、速度±5 kt）で開始位置を一様にずらす。ずれは起動時の `-Seed` で決まり、同じ番号なら同じ位置になる。番号0はずれなし、**1〜999は学習用、1000以上は評価用**。評価用の番号の飛行は学習に使えず、学習前後の比較は同じ評価用番号の組でのみ行える。実際の番号とずれは `metadata.json` の `initial` に記録し、機体が想定の開始位置にいなければ収録を始めない。開始速度、トリム、フラップ、エンジン・燃料・重量は機種ごとの確認・調整が必要。自動操縦は切る。
+- 滑走路の進入端・方位・長さ・幅は、FlightGear 2024.1の `Airports/apt.dat.gz`（風景に描画される滑走路）に合わせる。`RJTT.threshold.xml` は現実の最新データで34R進入端が355 m手前にあり、描画と一致しないため使わない（2026-10-12に修正）。標高は進入端付近の実測の地表高。
 
 ## 1. Windowsで開始する
 
@@ -21,12 +22,12 @@ PowerShellでリポジトリへ移動する。WSLのディストリビューシ�
 Set-Location '\\wsl.localhost\Ubuntu\home\jun\physical-ai-applied1-2026'
 py -3 --version
 & C:\ffmpeg\bin\ffmpeg.exe -version
-powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Aircraft c172p -Scenario ./config/scenarios/c172p-rjtt-34r-approach.json -Mode human
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Aircraft c172p -Scenario ./config/scenarios/c172p-rjtt-34r-approach.json -Mode human -Seed 1
 ```
 
-別のPowerShellも同じリポジトリへ移動して使う。起動スクリプトは通信XMLをFlightGear基本データのProtocolディレクトリへコピーする。初期状態をやり直すときはFlightGearを終了し、同じコマンドで再起動する。
+手動収録では飛行ごとに `-Seed` を変える（例：1, 2, 3…）。C172Pでは `powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fly_c172p.ps1 -Seed 8` の1コマンドで、起動中のFlightGearの終了、番号つきの起動、初期化の待機、`datasets/c172p/flight-008` への収録（動画付き）までを行える。使った番号は重複させない。別のPowerShellも同じリポジトリへ移動して使う。起動スクリプトは通信XMLをFlightGear基本データのProtocolディレクトリへコピーする。初期状態をやり直すときはFlightGearを終了し、同じコマンドで再起動する。
 
-初回は機体システムの初期化、エンジン運転、脚・フラップ・速度、F310の各軸とブレーキ割当を確認する。確認のため動かした後は新しく起動して収録する。各機体の起動スクリプトが設定を上書きすることがあるため、JSONだけで適切な進入状態が保証されるわけではない。
+初回は機体システムの初期化、エンジン運転、脚・フラップ・速度、F310の各軸（左スティック：操縦桿、右スティック左右：ラダー、RT/LT：スロットル増減）を確認する。確認のため動かした後は新しく起動して収録する。各機体の起動スクリプトが設定を上書きすることがあるため、JSONだけで適切な進入状態が保証されるわけではない。
 
 ## 2. 手動操縦を収録する（後日実施）
 
@@ -34,7 +35,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.p
 py -3 -m landing.session record --scenario config/scenarios/c172p-rjtt-34r-approach.json --output datasets/c172p/flight-001 --seconds 240 --video --ffmpeg C:\ffmpeg\bin\ffmpeg.exe
 ```
 
-地形・飛行モデルの初期化と一時停止を確認し、シナリオのフラップ・脚・トリム・スロットルを再適用したうえで、収録側が時刻と物理の停止を解除する。着陸し減速したら収録コンソールでCtrl+C。指定時間に達した場合も終了する。終了時・通信異常時にはFlightGearを停止し、動画を閉じる。強制的にプロセスを終了すると、この後処理は保証されない。
+地形・飛行モデルの初期化、一時停止（物理計算と時計のどちらかが停止していればよい。FlightGearの初期化で片方が解除されることがある）、乱数で決めた開始位置を確認する。その後シナリオのフラップ・脚・トリム・スロットル・ブレーキを再適用し、収録側が時刻と物理の停止を解除する。収録中はコンソールに1秒ごとの進入ガイドを表示する（シナリオの `guidance`：進入端から400 mの接地目標点に向かう3度の経路。進入端の通過高度は約69 ft）。表示は「進入端までの距離、経路より何ft高い・低いか、中心線の左右どちらに何m、速度、降下率と目安」。終了時は評価の要約を表示し、全体は `metadata.json` に保存する。シナリオの `damage_properties`（C172Pは3脚の折損）を終了時に読み、`damage` として記録して評価に含める。接地を検知してから `min_rollout_seconds`（既定5秒）滑走すると収録は自動で終了する（`end_reason: rollout_complete`）。途中でやめる場合は収録コンソールでCtrl+C。指定時間に達した場合も終了する。終了時・通信異常時にはFlightGearを停止し、動画を閉じる。強制的にプロセスを終了すると、この後処理は保証されない。
+
+フラップは操縦・学習の対象外で、シナリオの値に固定する。C172Pは空中開始の5秒後（シミュレーション時間）に、機体のスクリプトがフラップを1.0、スロットルを0.75に書き換える。誰も操作しないフラップが変わったことを機体スクリプトによる上書きの合図とし、フラップをシナリオの値に、スロットルを直前の記録値に戻す。そのサンプルは記録せず、`metadata.json` の `control_resets` に時刻と観測値・復元値を残す。キーボードでフラップを操作した場合も同じ扱いになる。
 
 `--seconds` は実時間の上限。動画はFlightGearウィンドウだけを通常速度で記録する。ウィンドウのタイトルが `FlightGear` でない場合はFFmpegが失敗するので `ffmpeg.log` を確認する。録画中はウィンドウを最小化しない。
 
@@ -53,10 +56,16 @@ py -3 -m landing.session record --scenario config/scenarios/c172p-rjtt-34r-appro
 
 ```powershell
 py -3 -m landing.session inspect datasets/c172p/flight-001
-py -3 -m landing.session label datasets/c172p/flight-001 --outcome success --note "動画を確認。滑走路内に接地し減速。操作設定の変更なし。"
+py -3 -m landing.session label datasets/c172p/flight-001 --outcome success --note "動画を確認。滑走路内に接地し滑走。操作設定の変更なし。"
 ```
 
-失敗は `--outcome failure`、設定確認や不要な飛行は `exclude` とする。`candidate_success` は接地検知、接地直前の降下率、姿勢、滑走路内の減速を使った参考判定で、人による確認の代わりにはしない。接地検知は `/gear/gear[1]/wow` を使うため、3機種で実際に機能するか確認する。
+収録した飛行の合否は一覧で確認できる。
+
+```powershell
+py -3 -m landing.session review datasets/c172p
+```
+
+評価はシナリオファイルの最新の基準で行う。シナリオのハッシュ（`scenario_hash`）は、説明・評価基準・進入ガイド・損傷判定の設定を除いたタスク条件だけから計算するため、基準を見直しても記録済みの飛行と学習の対応は変わらない。`success` は、評価の全項目（損傷なしを含む）に合格した飛行にしか付けられない。合格した飛行も、動画で接地と操作を確認してから付ける。学習でも、保存された評価が全項目合格であることを確認する。失敗は `--outcome failure`、設定確認や不要な飛行は `exclude` とする。`candidate_success` は `checks` の全項目が合格した場合の参考判定で、人による確認の代わりにはしない。項目は、クラッシュなし、接地位置（進入端から `touchdown_max_m` 以内）、中心線からのずれ（`max_cross_m`）、接地直前の降下率（`min_sink_fps` 以上 `max_sink_fps` 以下。下限−0.5 ft/sは、引き起こし後に浮いてそっと接地した飛行の数値の揺れ（−0.05 ft/s）を不合格にしないため）、バンク角（`max_bank_deg`）、主脚からの接地（ピッチが `min_pitch_deg` 以上）、機首方位のずれ（`max_heading_error_deg`）、バウンドなし、滑走路内の滑走、規定時間の滑走。閾値は仮の値で、手動飛行の実測で見直す。減速・停止は評価しない。接地検知は `/gear/gear[1]/wow` を使うため、3機種で実際に機能するか確認する。
 
 ## 4. Ubuntuで学習する
 
@@ -70,7 +79,7 @@ uv run --locked python -m landing.train \
 
 機体・シナリオが同一の、完了かつ人が成功確認した手動飛行だけを受け付ける。AI飛行、診断記録、重複した飛行は拒否する。ログ時刻や画像ファイル名だけを変更したコピーも重複として扱う。時刻の逆行・重複、非有限値、クラッシュ、範囲外の操作値を含む飛行も拒否する。飛行単位で約20%を検証用に分離し、正規化統計は学習側だけから計算する。
 
-入力は滑走路相対位置・高度・速度・姿勢・角速度・接地状態の17値。出力はエルロン、エレベータ、ラダー、全エンジン共通スロットル、左右ブレーキ、エレベータトリムの7値。フラップ・脚は固定し、左右異なる推力は扱わない。設定を変更したデータは拒否する。逆噴射・スポイラー・F-14固有制御はこのベースラインの学習出力に含まれない。
+入力は滑走路相対位置・高度・速度・姿勢・角速度・接地状態の17値。出力はエルロン、エレベータ、ラダー、全エンジン共通スロットルの4値。フラップ・脚・エレベータトリム・ブレーキは固定し、左右異なる推力は扱わない。設定を変更したデータは拒否する。逆噴射・スポイラー・F-14固有制御はこのベースラインの学習出力に含まれない。
 
 `状態(t) → 次の受信サンプルの操縦値(t+Δt)` を学習する。Δtが正で75 ms以下の隣接ペアのみ使い、停止中と欠落区間を除く。これは通信サンプルに基づく近似で、FDMの厳密なステップ前後を保証しない。最初の実通信確認で遅延と信号の意味を検証する。
 
@@ -81,7 +90,7 @@ uv run --locked python -m landing.train \
 FlightGearを閉じ、PowerShellから同じシナリオをAIモードで起動する。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Aircraft c172p -Scenario ./config/scenarios/c172p-rjtt-34r-approach.json -Mode ai
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start_flightgear.ps1 -Aircraft c172p -Scenario ./config/scenarios/c172p-rjtt-34r-approach.json -Mode ai -Seed 1000
 ```
 
 別のPowerShellから開始する。

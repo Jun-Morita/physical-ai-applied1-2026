@@ -11,12 +11,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from test_pipeline import ROOT, SCENARIO, state, wire
+from test_pipeline import NO_DAMAGE, ROOT, SCENARIO, START_PROPS, state, wire
 
 from landing import session
 from landing.compare import compare
-from landing.core import digest
-from landing.data import episode_digest, training_episodes
+from landing.core import scenario_hash
+from landing.feedback import feedback
+from landing.data import demonstration_action, episode_digest, training_episodes
 from landing.recording import finish_video
 from landing.storage import atomic_json, file_digest, read_json
 from landing.train import load_episodes
@@ -32,6 +33,8 @@ def write_episode(path, rows):
             "status": "complete",
             "outcome": "success",
             "scenario": SCENARIO,
+            "initial": {"seed": 1},
+            "evaluation": {"candidate_success": True},
             "instruction": "land",
         },
     )
@@ -113,7 +116,8 @@ class RegressionTests(unittest.TestCase):
             write_episode(path, rows)
             with self.assertRaisesRegex(ValueError, "fewer than 10"):
                 training_episodes(
-                    [path], {"scenario_hash": digest(SCENARIO), "instruction": "land"}
+                    [path],
+                    {"scenario_hash": scenario_hash(SCENARIO), "instruction": "land"},
                 )
 
     def test_video_failure_cannot_prevent_metadata_persistence(self):
@@ -145,7 +149,8 @@ class RegressionTests(unittest.TestCase):
             "/sim/signals/fdm-initialized": True,
             "/sim/freeze/master": True,
             "/sim/freeze/clock": True,
-            "/sim/physical-ai/scenario-hash": digest(SCENARIO),
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
             "/sim/input/no-joystick-input": False,
             "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
             "/controls/gear/gear-down-command": True,
@@ -170,6 +175,299 @@ class RegressionTests(unittest.TestCase):
             session.run(args)
             meta = read_json(args.output / "metadata.json")
             self.assertEqual((meta["status"], meta["rows"]), ("incomplete", 0))
+
+    def test_session_reverts_aircraft_script_override(self):
+        props = {
+            "/sim/aircraft": "c172p",
+            "/sim/sceneryloaded": True,
+            "/sim/signals/fdm-initialized": True,
+            "/sim/freeze/master": True,
+            "/sim/freeze/clock": True,
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
+            "/sim/input/no-joystick-input": False,
+            "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
+            "/controls/gear/gear-down-command": True,
+        }
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(session, "prop", side_effect=props.__getitem__),
+            patch.object(session, "pause"),
+            patch.object(session, "configure_controls"),
+            patch.object(session, "set_prop") as setter,
+            patch.object(session.socket, "socket") as sock,
+            patch("builtins.print"),
+        ):
+            sock.return_value.recv.side_effect = [
+                wire(state()),
+                wire({**state(0.05), "throttle": 0.42}),
+                BlockingIOError(),
+                wire({**state(0.1), "flaps": 1.0, "throttle": 0.75}),
+                BlockingIOError(),
+                wire({**state(0.15), "throttle": 0.42}),
+                BlockingIOError(),
+                KeyboardInterrupt(),
+            ]
+            args = argparse.Namespace(
+                output=Path(tmp) / "episode",
+                scenario=ROOT / "config/scenarios/c172p-rjtt-34r-approach.json",
+                policy=None,
+                timeout=1,
+                seconds=10,
+                video=False,
+            )
+            session.run(args)
+            self.assertEqual(
+                [c.args for c in setter.call_args_list],
+                [
+                    ("/controls/engines/engine[0]/throttle", 0.42, "double"),
+                    ("/controls/flight/flaps", SCENARIO["controls"]["flaps"], "double"),
+                ],
+            )
+            meta = read_json(args.output / "metadata.json")
+            self.assertEqual(
+                meta["control_resets"],
+                [
+                    {
+                        "time": 0.1,
+                        "observed_flaps": 1.0,
+                        "observed_throttle": 0.75,
+                        "restored_throttle": 0.42,
+                    }
+                ],
+            )
+            self.assertEqual(
+                [r["state"]["time"] for r in session.rows_at(args.output)], [0.05, 0.15]
+            )
+
+    def test_session_ends_after_rollout_and_rejects_fixed_control_changes(self):
+        props = {
+            "/sim/aircraft": "c172p",
+            "/sim/sceneryloaded": True,
+            "/sim/signals/fdm-initialized": True,
+            "/sim/freeze/master": True,
+            "/sim/freeze/clock": True,
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
+            "/sim/input/no-joystick-input": False,
+            "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
+            "/controls/gear/gear-down-command": True,
+        }
+        rollout = SCENARIO["evaluation"]["min_rollout_seconds"]
+        packets = [wire(state())]
+        for t, wow in [(0.05, 0), (1, 1), (1 + rollout, 1), (2 + rollout, 1)]:
+            packets += [wire({**state(t), "wow": wow}), BlockingIOError()]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(session, "prop", side_effect=props.__getitem__),
+            patch.object(session, "pause"),
+            patch.object(session, "configure_controls"),
+            patch.object(session.socket, "socket") as sock,
+            patch("builtins.print"),
+        ):
+            sock.return_value.recv.side_effect = packets
+            args = argparse.Namespace(
+                output=Path(tmp) / "episode",
+                scenario=ROOT / "config/scenarios/c172p-rjtt-34r-approach.json",
+                policy=None,
+                timeout=1,
+                seconds=600,
+                video=False,
+            )
+            session.run(args)
+            meta = read_json(args.output / "metadata.json")
+            self.assertEqual(
+                (meta["end_reason"], meta["rows"]), ("rollout_complete", 3)
+            )
+            self.assertTrue(meta["evaluation"]["checks"]["rollout_complete"])
+            props["/position/latitude-deg"] += 0.001
+            with self.assertRaisesRegex(ValueError, "seeded start"):
+                session.run(
+                    argparse.Namespace(**{**vars(args), "output": Path(tmp) / "b"})
+                )
+        with tempfile.TemporaryDirectory() as tmp:
+            write_episode(Path(tmp), [{"state": state(i * 0.05)} for i in range(3)])
+            meta = read_json(Path(tmp) / "metadata.json")
+            atomic_json(
+                Path(tmp) / "metadata.json", {**meta, "initial": {"seed": 1000}}
+            )
+            with self.assertRaisesRegex(ValueError, "training seed"):
+                load_episodes([Path(tmp)])
+        for change in ({"brake_left": 0.5}, {"trim": 0.1}):
+            with self.assertRaisesRegex(ValueError, "brake"):
+                demonstration_action({**state(), **change}, SCENARIO)
+
+    def test_session_ends_when_the_aircraft_stops_off_the_runway(self):
+        props = {
+            "/sim/aircraft": "c172p",
+            "/sim/sceneryloaded": True,
+            "/sim/signals/fdm-initialized": True,
+            "/sim/freeze/master": True,
+            "/sim/freeze/clock": True,
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
+            "/sim/input/no-joystick-input": False,
+            "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
+            "/controls/gear/gear-down-command": True,
+        }
+        # Flying, then stuck in water: no gear contact and no ground speed.
+        packets = [wire(state())]
+        for t, speed in [(0.05, 60), (1, 0), (2, 0), (4.5, 0), (9, 0)]:
+            packets += [wire({**state(t), "groundspeed_kt": speed}), BlockingIOError()]
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(session, "prop", side_effect=props.__getitem__),
+            patch.object(session, "pause"),
+            patch.object(session, "configure_controls"),
+            patch.object(session.socket, "socket") as sock,
+            patch("builtins.print"),
+        ):
+            sock.return_value.recv.side_effect = packets
+            args = argparse.Namespace(
+                output=Path(tmp) / "episode",
+                scenario=ROOT / "config/scenarios/c172p-rjtt-34r-approach.json",
+                policy=None,
+                timeout=1,
+                seconds=600,
+                video=False,
+            )
+            session.run(args)
+            meta = read_json(args.output / "metadata.json")
+            self.assertEqual(
+                (meta["end_reason"], meta["status"], meta["rows"]),
+                ("stopped_off_runway", "complete", 4),
+            )
+            self.assertFalse(meta["evaluation"]["candidate_success"])
+
+    def test_approved_lists_successes_of_the_current_task(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = copy.deepcopy(SCENARIO)
+            other["runway_geometry"]["latitude"] += 0.01
+            for name, outcome, scenario in [
+                ("a", "success", SCENARIO),
+                ("b", "unreviewed", SCENARIO),
+                ("c", "success", other),
+            ]:
+                path = Path(tmp) / name
+                path.mkdir()
+                atomic_json(
+                    path / "metadata.json", {"outcome": outcome, "scenario": scenario}
+                )
+            self.assertEqual(session.approved(tmp, SCENARIO), [str(Path(tmp) / "a")])
+
+    def test_feedback_label_gate_and_review(self):
+        from landing.core import evaluate, initial_state
+
+        # 1200 m before the threshold, 200 ft above the nominal start-height path.
+        near = {**SCENARIO, "initial": {**SCENARIO["initial"], "distance_m": 1200}}
+        start = initial_state(near, 0)
+        approach = {**state(), **start, "altitude_ft": 3 + 50 + 206 + 200}
+        rows = [{"state": approach}] + [{"state": state(i + 1)} for i in range(9)]
+        for row in rows[3:]:
+            row["state"]["wow"] = 1
+        rows[3]["state"]["pitch_deg"] = -2
+        result = evaluate(rows, SCENARIO, NO_DAMAGE)
+        text = "\n".join(feedback(rows, SCENARIO, result))
+        self.assertIn("ft高すぎます", text)
+        self.assertIn("フレア", text)
+        rows[3]["state"]["pitch_deg"] = 0
+        passed = evaluate(rows, SCENARIO, NO_DAMAGE)
+        self.assertTrue(passed["candidate_success"])
+        self.assertIn("全項目に合格", "\n".join(feedback(rows, SCENARIO, passed)))
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, damage in [("good", NO_DAMAGE), ("broken", None)]:
+                path = Path(tmp) / name
+                write_episode(path, rows)
+                meta = read_json(path / "metadata.json")
+                atomic_json(
+                    path / "metadata.json",
+                    {
+                        **meta,
+                        "damage": damage,
+                        "rows": len(rows),
+                        "outcome": "unreviewed",
+                    },
+                )
+            listing = session.review(Path(tmp))
+            self.assertIn("2 flights, 1 passing every check", listing)
+            self.assertIn("no_damage", listing)
+            for name, error in [("broken", "every landing check"), ("good", None)]:
+                argv = ["session", "label", str(Path(tmp) / name)]
+                argv += ["--outcome", "success", "--note", "checked video"]
+                with patch("sys.argv", argv), patch("builtins.print"):
+                    if error:
+                        with self.assertRaisesRegex(ValueError, error):
+                            session.main()
+                    else:
+                        session.main()
+            self.assertEqual(
+                read_json(Path(tmp) / "good/metadata.json")["outcome"], "success"
+            )
+
+    def test_autoland_flies_sessions_as_reviewable_expert(self):
+        from landing.autoland import Autoland
+        from landing.core import ACTIONS, LIMITS, initial_state
+
+        pilot = Autoland(SCENARIO)
+        start = {**state(), **initial_state(SCENARIO, 0)}
+        start["altitude_ft"] = initial_state(SCENARIO, 0)["altitude_ft"]
+        command = pilot.predict(start)
+        self.assertEqual(len(command), len(ACTIONS))
+        self.assertTrue(all(lo <= v <= hi for v, (lo, hi) in zip(command, LIMITS)))
+        self.assertEqual(pilot.phase, "approach")
+        pilot.predict({**state(0.05), "wow": 1})
+        self.assertEqual(pilot.phase, "rollout")
+        props = {
+            "/sim/aircraft": "c172p",
+            "/sim/sceneryloaded": True,
+            "/sim/signals/fdm-initialized": True,
+            "/sim/freeze/master": True,
+            "/sim/freeze/clock": True,
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
+            "/sim/input/no-joystick-input": True,
+            "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
+            "/controls/gear/gear-down-command": True,
+        }
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(session, "prop", side_effect=props.__getitem__),
+            patch.object(session, "pause"),
+            patch.object(session, "configure_controls"),
+            patch.object(session.socket, "socket") as sock,
+            patch("builtins.print"),
+        ):
+            sock.return_value.recv.side_effect = [
+                wire(state()),
+                wire(state(0.05)),
+                BlockingIOError(),
+                KeyboardInterrupt(),
+            ]
+            args = argparse.Namespace(
+                output=Path(tmp) / "expert",
+                scenario=ROOT / "config/scenarios/c172p-rjtt-34r-approach.json",
+                policy=None,
+                autoland=True,
+                timeout=1,
+                seconds=10,
+                video=False,
+            )
+            session.run(args)
+            sock.return_value.sendto.assert_called_once()
+            meta = read_json(args.output / "metadata.json")
+            self.assertEqual(meta["source"], "expert")
+            self.assertEqual(meta["policy_manifest"]["type"], "autoland")
+            # Expert flights pass the same review gate as human ones.
+            atomic_json(
+                args.output / "metadata.json",
+                {
+                    **meta,
+                    "outcome": "success",
+                    "evaluation": {"candidate_success": True},
+                },
+            )
+            with self.assertRaisesRegex(ValueError, "fewer than|training seed"):
+                load_episodes([args.output])
 
     def test_comparison_rejects_diagnostic_and_duplicates(self):
         with tempfile.TemporaryDirectory() as tmp:

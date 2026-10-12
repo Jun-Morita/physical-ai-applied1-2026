@@ -2,7 +2,7 @@
 
 - Physical AI 2026 応用編1の最終課題を開発するリポジトリです。
 - 講座情報はREADMEの公式ページを参照してください。
-- 課題要件は `docs/final-project-requirements.md` を参照してください。元資料は受講者から提供された9/17版の画像です。
+- 課題要件は `docs/final-project-requirements.md` を参照してください。元資料は受講者から提供された10/8版の画像です。
 - Pythonの環境構築・依存関係管理にはuvを使用してください。
 - Pythonのバージョンは、採用するシミュレータやライブラリの互換性を確認して選定してください。
 - Python環境を構築したら、`pyproject.toml` と `uv.lock` を管理し、READMEに再現・実行手順を記載してください。

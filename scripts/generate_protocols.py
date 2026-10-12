@@ -35,5 +35,4 @@ if __name__ == "__main__":
     nodes.update(
         {f"throttle{i}": f"/controls/engines/engine[{i}]/throttle" for i in range(4)}
     )
-    nodes.update({k: FIELDS[k] for k in ("brake_left", "brake_right", "trim")})
     (root / "physical-ai-action.xml").write_text(build("input", nodes))

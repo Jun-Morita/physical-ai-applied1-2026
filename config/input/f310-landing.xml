@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!--
+Logitech F310 bindings for the landing task, loaded with fgfs - -config.
+FlightGear keeps an existing /input/joysticks/js[0] instead of searching by device name.
+Only the stick, rudder and throttle are bound; buttons, flaps, brakes and trim are not.
+Axis numbers assume XInput mode on Windows; confirm them with js_demo.exe.
+-->
+<PropertyList>
+ <input>
+  <joysticks>
+   <js n="0">
+    <source type="string">physical-ai/config/input/f310-landing.xml</source>
+
+    <axis n="0">
+     <desc>Left stick X: aileron</desc>
+     <binding>
+      <command>property-scale</command>
+      <property>/controls/flight/aileron</property>
+      <dead-band type="double">0.05</dead-band>
+      <squared type="bool">true</squared>
+     </binding>
+    </axis>
+
+    <axis n="1">
+     <desc>Left stick Y: elevator</desc>
+     <binding>
+      <command>property-scale</command>
+      <property>/controls/flight/elevator</property>
+      <factor type="double">-1.0</factor>
+      <dead-band type="double">0.05</dead-band>
+      <squared type="bool">true</squared>
+     </binding>
+    </axis>
+
+    <axis n="2">
+     <desc>Triggers: RT increases and LT decreases throttle; released triggers hold it</desc>
+     <low>
+      <repeatable type="bool">true</repeatable>
+      <binding>
+       <command>nasal</command>
+       <script>controls.adjThrottle(1)</script>
+      </binding>
+     </low>
+     <low-threshold type="double">-0.3</low-threshold>
+     <high>
+      <repeatable type="bool">true</repeatable>
+      <binding>
+       <command>nasal</command>
+       <script>controls.adjThrottle(-1)</script>
+      </binding>
+     </high>
+     <high-threshold type="double">0.3</high-threshold>
+    </axis>
+
+    <axis n="4">
+     <desc>Right stick X: rudder</desc>
+     <binding>
+      <command>property-scale</command>
+      <property>/controls/flight/rudder</property>
+      <dead-band type="double">0.05</dead-band>
+      <squared type="bool">true</squared>
+     </binding>
+    </axis>
+   </js>
+  </joysticks>
+ </input>
+</PropertyList>

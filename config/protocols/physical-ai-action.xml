@@ -39,21 +39,6 @@
         <type>double</type>
         <node>/controls/engines/engine[3]/throttle</node>
       </chunk>
-      <chunk>
-        <name>brake_left</name>
-        <type>double</type>
-        <node>/controls/gear/brake-left</node>
-      </chunk>
-      <chunk>
-        <name>brake_right</name>
-        <type>double</type>
-        <node>/controls/gear/brake-right</node>
-      </chunk>
-      <chunk>
-        <name>trim</name>
-        <type>double</type>
-        <node>/controls/flight/elevator-trim</node>
-      </chunk>
     </input>
   </generic>
 </PropertyList>

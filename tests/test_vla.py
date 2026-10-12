@@ -8,13 +8,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from test_pipeline import ROOT, SCENARIO, state, wire
+from test_pipeline import ROOT, SCENARIO, START_PROPS, state, wire
 
 from landing import session
 from landing.compare import compare
-from landing.core import ACTIONS, FEATURES, digest, read_json
+from landing.core import ACTIONS, FEATURES, read_json, scenario_hash
 from landing.vision import INSTRUCTION, BridgePolicy, atomic_json, capture
-from landing.vla import decode_action, training_episodes
+from landing.vla import decode_action, state_normalization, training_episodes
 
 
 class VLATests(unittest.TestCase):
@@ -32,12 +32,26 @@ class VLATests(unittest.TestCase):
                 SCENARIO["controls"]["throttle"],
                 "double",
             )
-            self.assertEqual(setter.call_count, 4)
+            setter.assert_any_call("/controls/gear/brake-left", 0.0, "double")
+            self.assertEqual(setter.call_count, 6)
+
+    def test_state_normalization_uses_training_statistics(self):
+        from landing.vision import STATE_SCALE
+
+        # The untrained baseline keeps the fixed scale; fine-tuned models carry stats.
+        self.assertEqual(state_normalization({})[1], STATE_SCALE)
+        stats = {
+            "state_mean": [1.0] * len(FEATURES),
+            "state_std": [2.0] * len(FEATURES),
+        }
+        self.assertEqual(
+            state_normalization(stats), (stats["state_mean"], stats["state_std"])
+        )
 
     def test_action_mapping(self):
-        self.assertEqual(decode_action([0] * 7), [0, 0, 0, 0.5, 0.5, 0.5, 0])
+        self.assertEqual(decode_action([0] * 4), [0, 0, 0, 0.5])
         with self.assertRaises(ValueError):
-            decode_action([float("nan")] * 7)
+            decode_action([float("nan")] * 4)
 
     def test_image_capture_bounds_and_validation(self):
         with (
@@ -67,7 +81,7 @@ class VLATests(unittest.TestCase):
                 {
                     "worker_id": "test",
                     "manifest": {
-                        "scenario_hash": digest(SCENARIO),
+                        "scenario_hash": scenario_hash(SCENARIO),
                         "instruction": INSTRUCTION,
                         "features": FEATURES,
                         "actions": ACTIONS,
@@ -85,14 +99,14 @@ class VLATests(unittest.TestCase):
                         req = requests[0]
                         atomic_json(
                             req.with_name(req.name.replace(".request", ".response")),
-                            {"worker_id": "test", "action": [0] * 7},
+                            {"worker_id": "test", "action": [0] * 4},
                         )
                         return
                     time.sleep(0.005)
 
             thread = threading.Thread(target=worker)
             thread.start()
-            self.assertEqual(policy.predict_frame(state(), SCENARIO, image), [0] * 7)
+            self.assertEqual(policy.predict_frame(state(), SCENARIO, image), [0] * 4)
             thread.join()
             self.assertFalse(list(path.glob("*.request.json")))
             policy.timeout = 0.01
@@ -106,7 +120,8 @@ class VLATests(unittest.TestCase):
             "/sim/signals/fdm-initialized": True,
             "/sim/freeze/master": True,
             "/sim/freeze/clock": True,
-            "/sim/physical-ai/scenario-hash": digest(SCENARIO),
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
             "/sim/input/no-joystick-input": True,
             "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
             "/controls/gear/gear-down-command": True,
@@ -122,8 +137,8 @@ class VLATests(unittest.TestCase):
             patch.object(session, "capture", return_value={"file": "frames/test.jpg"}),
             patch("builtins.print"),
         ):
-            bridge.return_value.model = {"scenario_hash": digest(SCENARIO)}
-            bridge.return_value.predict_frame.return_value = [0, 0, 0, 0.4, 0, 0, 0]
+            bridge.return_value.model = {"scenario_hash": scenario_hash(SCENARIO)}
+            bridge.return_value.predict_frame.return_value = [0, 0, 0, 0.4]
             paused = state(0.1)
             paused.update(paused=1, clock_paused=1)
             sock.return_value.recv.side_effect = [
@@ -154,6 +169,114 @@ class VLATests(unittest.TestCase):
             self.assertEqual(meta["execution_mode"], "paused_inference")
             self.assertEqual(meta["source"], "ai")
 
+    def test_expert_pauses_simulation_while_capturing(self):
+        props = {
+            "/sim/aircraft": "c172p",
+            "/sim/sceneryloaded": True,
+            "/sim/signals/fdm-initialized": True,
+            "/sim/freeze/master": True,
+            "/sim/freeze/clock": True,
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
+            "/sim/input/no-joystick-input": True,
+            "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
+            "/controls/gear/gear-down-command": True,
+            "/sim/current-view/view-number": 0,
+        }
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(session, "prop", side_effect=props.__getitem__),
+            patch.object(session, "pause") as pause,
+            patch.object(session, "configure_controls"),
+            patch.object(session.socket, "socket") as sock,
+            patch.object(session, "capture", return_value={"file": "frames/test.jpg"}),
+            patch("builtins.print"),
+        ):
+            paused = state(0.05)
+            paused.update(paused=1, clock_paused=1)
+            sock.return_value.recv.side_effect = [
+                wire(state()),
+                wire(state(0.05)),
+                BlockingIOError(),
+                wire(paused),
+                KeyboardInterrupt(),
+            ]
+            args = argparse.Namespace(
+                scenario=ROOT / "config/scenarios/c172p-rjtt-34r-approach.json",
+                policy=None,
+                autoland=True,
+                images=True,
+                output=Path(tmp) / "expert",
+                timeout=1,
+                seconds=10,
+                video=False,
+            )
+            session.run(args)
+            # Start, pause for the capture, resume after the command, final pause.
+            self.assertEqual(
+                [c.args[0] for c in pause.call_args_list],
+                [True, False, True, False, True],
+            )
+            sock.return_value.sendto.assert_called_once()
+            meta = read_json(args.output / "metadata.json")
+            self.assertEqual(meta["execution_mode"], "paused_capture")
+            self.assertEqual(meta["source"], "expert")
+
+    def test_override_arriving_while_pausing_for_capture_is_dropped(self):
+        props = {
+            "/sim/aircraft": "c172p",
+            "/sim/sceneryloaded": True,
+            "/sim/signals/fdm-initialized": True,
+            "/sim/freeze/master": True,
+            "/sim/freeze/clock": True,
+            "/sim/physical-ai/scenario-hash": scenario_hash(SCENARIO),
+            **START_PROPS,
+            "/sim/input/no-joystick-input": True,
+            "/controls/flight/flaps": SCENARIO["controls"]["flaps"],
+            "/controls/gear/gear-down-command": True,
+            "/sim/current-view/view-number": 0,
+        }
+        frozen = {"paused": 1, "clock_paused": 1}
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(session, "prop", side_effect=props.__getitem__),
+            patch.object(session, "pause"),
+            patch.object(session, "configure_controls"),
+            patch.object(session, "set_prop"),
+            patch.object(session.socket, "socket") as sock,
+            patch.object(
+                session, "capture", return_value={"file": "frames/test.jpg"}
+            ) as capture,
+            patch("builtins.print"),
+        ):
+            # The C172P override lands in the sample acknowledging the pause.
+            sock.return_value.recv.side_effect = [
+                wire(state()),
+                wire(state(0.05)),
+                BlockingIOError(),
+                wire({**state(0.05), **frozen, "flaps": 1.0, "throttle": 0.75}),
+                wire(state(0.1)),
+                BlockingIOError(),
+                wire({**state(0.1), **frozen}),
+                KeyboardInterrupt(),
+            ]
+            args = argparse.Namespace(
+                scenario=ROOT / "config/scenarios/c172p-rjtt-34r-approach.json",
+                policy=None,
+                autoland=True,
+                images=True,
+                output=Path(tmp) / "expert",
+                timeout=1,
+                seconds=10,
+                video=False,
+            )
+            session.run(args)
+            capture.assert_called_once()
+            meta = read_json(args.output / "metadata.json")
+            self.assertEqual(len(meta["control_resets"]), 1)
+            rows = session.rows_at(args.output)
+            self.assertEqual([r["state"]["time"] for r in rows], [0.1])
+
     def test_comparison_keeps_failed_attempts(self):
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
@@ -177,16 +300,96 @@ class VLATests(unittest.TestCase):
                         "execution_mode": "paused_inference",
                         "image_period": 0.2,
                         "policy_hash": name,
+                        "initial": {"seed": 1000},
                     },
                 )
             result = compare(paths[:1], paths[1:])
             self.assertEqual(result["before"]["count"], 1)
             self.assertEqual(result["after"]["candidate_success_rate"], 0)
+            self.assertEqual(result["after"]["touchdown_rate"], 0)
             meta = read_json(paths[1] / "metadata.json")
+            for seed, error in [(1001, "same start seeds"), (1, "held-out")]:
+                atomic_json(
+                    paths[1] / "metadata.json", {**meta, "initial": {"seed": seed}}
+                )
+                with self.assertRaisesRegex(ValueError, error):
+                    compare(paths[:1], paths[1:])
             meta["image_period"] = 0.5
             atomic_json(paths[1] / "metadata.json", meta)
             with self.assertRaisesRegex(ValueError, "conditions"):
                 compare(paths[:1], paths[1:])
+
+    def test_expert_paused_captures_pair_with_their_commands(self):
+        from landing.train import load_episodes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for episode in range(3):
+                path = Path(tmp) / f"expert-{episode}"
+                (path / "frames").mkdir(parents=True)
+                (path / "frames/f.jpg").write_bytes(b"synthetic-test-image")
+                image_hash = hashlib.sha256(b"synthetic-test-image").hexdigest()
+                atomic_json(
+                    path / "metadata.json",
+                    {
+                        "source": "expert",
+                        "status": "complete",
+                        "outcome": "success",
+                        "scenario": SCENARIO,
+                        "initial": {"seed": 1},
+                        "evaluation": {"candidate_success": True},
+                        "instruction": INSTRUCTION,
+                        "execution_mode": "paused_capture",
+                    },
+                )
+                rows = []
+                for i in range(25):
+                    s = {**state(i * 0.2), "paused": 1, "clock_paused": 1}
+                    s["altitude_ft"] += episode
+                    image = {
+                        "file": "frames/f.jpg",
+                        "sim_before": i * 0.2,
+                        "sim_after": i * 0.2,
+                        "sha256": image_hash,
+                        "view_number": 0,
+                    }
+                    rows.append(
+                        {"state": s, "image": image, "command": [0.1, -0.1, 0, 0.5]}
+                    )
+                (path / "samples.jsonl").write_text(
+                    "".join(json.dumps(r) + "\n" for r in rows)
+                )
+                paths.append(path)
+            manifest = {
+                "scenario_hash": scenario_hash(SCENARIO),
+                "instruction": INSTRUCTION,
+            }
+            # Paused captures are exact pairs, not rejected as crossing a pause.
+            episodes = training_episodes(paths, manifest)
+            self.assertEqual(len(episodes[0]["samples"]), 25)
+            self.assertEqual(episodes[0]["samples"][0]["action"], [0.1, -0.1, 0, 0.5])
+            self.assertEqual(load_episodes(paths)[0]["y"][0], [0.1, -0.1, 0, 0.5])
+            rows[0]["command"] = [2, 0, 0, 0.5]
+            (paths[0] / "samples.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in rows)
+            )
+            with self.assertRaisesRegex(ValueError, "Invalid expert command"):
+                load_episodes([paths[0]])
+            # A logged aircraft-script override row (recorded before the
+            # paused-capture fix) is dropped; an unlogged one rejects the flight.
+            rows[0]["command"] = [0.1, -0.1, 0, 0.5]
+            rows[1]["state"].update(flaps=1.0, throttle=0.75)
+            (paths[0] / "samples.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in rows)
+            )
+            with self.assertRaisesRegex(ValueError, "configuration changed"):
+                load_episodes([paths[0]])
+            meta = read_json(paths[0] / "metadata.json")
+            atomic_json(
+                paths[0] / "metadata.json",
+                {**meta, "control_resets": [{"time": 0.2, "observed_flaps": 1.0}]},
+            )
+            self.assertEqual(len(load_episodes([paths[0]])[0]["y"]), 24)
 
     def test_visual_dataset_filters_and_integrity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -204,6 +407,8 @@ class VLATests(unittest.TestCase):
                         "status": "complete",
                         "outcome": "success",
                         "scenario": SCENARIO,
+                        "initial": {"seed": 1},
+                        "evaluation": {"candidate_success": True},
                         "instruction": INSTRUCTION,
                     },
                 )
@@ -228,7 +433,10 @@ class VLATests(unittest.TestCase):
                     "".join(json.dumps(r) + "\n" for r in rows)
                 )
                 paths.append(path)
-            manifest = {"scenario_hash": digest(SCENARIO), "instruction": INSTRUCTION}
+            manifest = {
+                "scenario_hash": scenario_hash(SCENARIO),
+                "instruction": INSTRUCTION,
+            }
             self.assertEqual(len(training_episodes(paths, manifest)), 3)
             with self.assertRaisesRegex(ValueError, "Duplicate"):
                 training_episodes([paths[0]] * 3, manifest)

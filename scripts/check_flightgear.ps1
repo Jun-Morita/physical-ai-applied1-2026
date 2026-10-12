@@ -7,6 +7,10 @@ $base = "http://127.0.0.1:8080/json"
 function Read-Value([string]$Path) {
     (Invoke-RestMethod ($base + $Path) -TimeoutSec 5).value
 }
+# Joystick properties depend on how bindings were loaded; report absence instead of failing.
+function Read-Optional([string]$Path) {
+    try { Read-Value $Path } catch { "(missing: $Path)" }
+}
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $ready = $false
 while ((Get-Date) -lt $deadline) {
@@ -37,7 +41,8 @@ foreach ($value in @($altitude, $ground)) {
     ground_elevation_ft = $ground
     paused = Read-Value "/sim/freeze/master"
     clock_paused = Read-Value "/sim/freeze/clock"
-    joystick = Read-Value "/input/joysticks/js/id"
-    joystick_config = Read-Value "/input/joysticks/js/source"
+    joystick = Read-Optional "/input/joysticks/js/id"
+    joystick_config = Read-Optional "/input/joysticks/js/source"
+    joystick_axis4 = Read-Optional "/input/joysticks/js/axis[4]/desc"
     scope = "Initialization only; not a flight-performance or input-mapping test"
 } | ConvertTo-Json

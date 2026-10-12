@@ -1,5 +1,5 @@
 {
-  "description": "Unvalidated approach preset: tune and verify manually before collecting training data.",
+  "description": "Approach preset: 2 NM final to the 400 m aiming point on a 3 degree path, with seeded offsets. initial is runway-relative (distance before threshold, cross-track, height above runway); initial_variation gives uniform +/- limits.",
   "aircraft": "c172p",
   "airport": "RJTT",
   "runway": "34R",
@@ -12,31 +12,55 @@
   "control_port": 5502,
   "engine_count": 1,
   "runway_geometry": {
-    "latitude": 35.539694,
-    "longitude": 139.805136,
-    "heading_deg": 330.02,
-    "elevation_ft": 3.0,
-    "length_m": 3360,
-    "width_m": 60
+    "latitude": 35.54245959,
+    "longitude": 139.80318232,
+    "heading_deg": 330.0,
+    "elevation_ft": 4.3,
+    "length_m": 3003,
+    "width_m": 61
   },
-  "geometry_source": "Installed RJTT.threshold.xml; elevation/length/width are provisional simulation values, not navigation data.",
+  "geometry_source": "FlightGear 2024.1 Airports/apt.dat.gz RJTT 16L/34R, which the installed scenery draws. RJTT.threshold.xml places 34R 355 m earlier (current real-world data) and is not used. Elevation is the measured ground height near the threshold.",
   "initial": {
-    "latitude": 35.467559315735414,
-    "longitude": 139.85627615906498,
-    "heading_deg": 330.02,
-    "altitude_ft": 1645.178596328614,
-    "airspeed_kt": 75
+    "distance_m": 3704,
+    "cross_m": 0,
+    "height_ft": 706,
+    "heading_deg": 330.0,
+    "airspeed_kt": 70
+  },
+  "initial_variation": {
+    "cross_m": 100,
+    "height_ft": 60,
+    "heading_deg": 5,
+    "airspeed_kt": 5
+  },
+  "training_starts": {
+    "wide": {"distance_scale": 1.0, "variation": {"cross_m": 150, "height_ft": 150, "heading_deg": 5, "airspeed_kt": 5}},
+    "wide-half": {"distance_scale": 0.5, "variation": {"cross_m": 150, "height_ft": 150, "heading_deg": 5, "airspeed_kt": 5}},
+    "wide-quarter": {"distance_scale": 0.25, "variation": {"cross_m": 150, "height_ft": 150, "heading_deg": 5, "airspeed_kt": 5}}
   },
   "controls": {
     "flaps": 0.3333,
-    "throttle": 0.35,
+    "throttle": 0.5,
     "trim": 0
   },
+  "guidance": {
+    "glide_slope_deg": 3.0,
+    "aim_point_m": 400
+  },
+  "damage_properties": [
+    "/fdm/jsbsim/gear/unit[0]/broken",
+    "/fdm/jsbsim/gear/unit[1]/broken",
+    "/fdm/jsbsim/gear/unit[2]/broken"
+  ],
   "evaluation": {
     "min_rollout_seconds": 5,
-    "touchdown_max_m": 1200,
+    "touchdown_max_m": 900,
+    "min_sink_fps": -0.5,
     "max_sink_fps": 10,
     "max_bank_deg": 8,
-    "stop_speed_kt": 30
+    "max_cross_m": 15,
+    "min_pitch_deg": 0,
+    "max_heading_error_deg": 5,
+    "max_bounce_ft": 2.0
   }
 }

@@ -10,7 +10,15 @@ import time
 import uuid
 from pathlib import Path
 
-from .core import ACTIONS, FEATURES, LIMITS, clamp_actions, digest, read_json
+from .core import (
+    ACTIONS,
+    FEATURES,
+    LIMITS,
+    clamp_actions,
+    digest,
+    read_json,
+    scenario_hash,
+)
 from .data import training_episodes as training_episodes
 from .storage import atomic_json, file_digest
 from .vision import INSTRUCTION, STATE_SCALE
@@ -96,7 +104,7 @@ def prepare(args):
         "stage": "base_adapted",
         "model_lock": lock,
         "scenario": scenario,
-        "scenario_hash": digest(scenario),
+        "scenario_hash": scenario_hash(scenario),
         "instruction": args.instruction,
         "features": FEATURES,
         "actions": ACTIONS,
@@ -111,7 +119,21 @@ def prepare(args):
     print("Prepared adapted baseline:", args.output)
 
 
-def batch_input(tokenizer, observations, images, instruction, device, actions=None):
+def state_normalization(manifest):
+    """Offset and scale for the state vector.
+
+    Fine-tuned models store the training data's mean and standard deviation, so a
+    glide path deviation of tens of feet is visible next to kilometres of distance.
+    Earlier models (and the untrained baseline) use the fixed STATE_SCALE.
+    """
+    if "state_mean" in manifest:
+        return manifest["state_mean"], manifest["state_std"]
+    return [0.0] * len(FEATURES), STATE_SCALE
+
+
+def batch_input(
+    tokenizer, observations, images, instruction, device, actions=None, norm=None
+):
     import numpy as np
     import torch
     from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
@@ -151,7 +173,7 @@ def batch_input(tokenizer, observations, images, instruction, device, actions=No
     )
     batch = {
         "observation.state": torch.tensor(
-            [[v / s for v, s in zip(row, STATE_SCALE)] for row in observations],
+            [[(v - m) / s for v, m, s in zip(row, *norm)] for row in observations],
             dtype=torch.float32,
         ),
         IMAGE_KEY: torch.tensor(np.stack(pixels)),
@@ -181,7 +203,12 @@ def predict(policy, tokenizer, manifest, observations, images, device):
     import torch
 
     batch = batch_input(
-        tokenizer, observations, images, manifest["instruction"], device
+        tokenizer,
+        observations,
+        images,
+        manifest["instruction"],
+        device,
+        norm=state_normalization(manifest),
     )
     with torch.inference_mode():
         action = policy.select_action(batch).cpu().tolist()
@@ -204,6 +231,13 @@ def train(args):
     samples = [s for ep in fitting for s in ep["samples"]]
     val_samples = [s for ep in validation for s in ep["samples"]]
     policy, tokenizer, manifest = load_policy(args.base, args.device)
+    obs = [s["observation"] for s in samples]
+    mean = [sum(col) / len(col) for col in zip(*obs)]
+    std = [
+        max((sum((v - m) ** 2 for v in col) / len(col)) ** 0.5, 1e-3)
+        for col, m in zip(zip(*obs), mean)
+    ]
+    norm = (mean, std)
     optimizer = torch.optim.AdamW(
         [p for p in policy.parameters() if p.requires_grad], lr=args.lr
     )
@@ -223,6 +257,7 @@ def train(args):
             manifest["instruction"],
             args.device,
             [s["action"] for s in items],
+            norm,
         )
 
     for step in range(args.steps):
@@ -257,6 +292,8 @@ def train(args):
     manifest = {
         **manifest,
         "stage": "finetuned",
+        "state_mean": mean,
+        "state_std": std,
         "parent_manifest_hash": digest(manifest),
         "parent_weights_sha256": file_digest(args.base / "model.safetensors"),
     }
@@ -372,7 +409,8 @@ def check(args):
             [Image.new("RGB", (256, 256))],
             manifest["instruction"],
             args.device,
-            [[0, 0, 0, 0.3, 0, 0, 0]],
+            [[0, 0, 0, 0.3]],
+            state_normalization(manifest),
         )
         optimizer = torch.optim.AdamW(
             [p for p in policy.parameters() if p.requires_grad], lr=1e-4
