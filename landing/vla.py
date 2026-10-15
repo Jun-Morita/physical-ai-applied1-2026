@@ -13,11 +13,14 @@ from pathlib import Path
 from .core import (
     ACTIONS,
     FEATURES,
+    INSTRUMENT_FEATURES,
     LIMITS,
+    check_feature_names,
     clamp_actions,
     digest,
     read_json,
     scenario_hash,
+    select_features,
 )
 from .data import training_episodes as training_episodes
 from .storage import atomic_json, file_digest
@@ -25,6 +28,45 @@ from .vision import INSTRUCTION, STATE_SCALE
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE_KEY = "observation.images.camera1"
+FEATURE_SETS = {"all": FEATURES, "instruments": INSTRUMENT_FEATURES}
+CAMERA_SIZE = (1280, 720)  # FlightGear window used for every training flight
+# Square of the view through the windshield, centred on the runway on final:
+# no menu bar, and little of the panel (its values are numeric inputs).
+WINDOW_CROP = (460, 24, 820, 384)
+
+
+def unfreeze_vision(policy, layers):
+    """Make the last vision encoder layers and the image connector trainable.
+
+    SmolVLA trains only its action expert by default, so the image features stay
+    those of robot pretraining. Returns the newly trainable parameters.
+    """
+    if layers < 0:
+        raise ValueError("Vision layer count must be non-negative")
+    if layers == 0:
+        return []
+    vlm = policy.model.vlm_with_expert.get_vlm_model()
+    encoder = vlm.vision_model.encoder.layers
+    if layers > len(encoder):
+        raise ValueError(f"The vision encoder has {len(encoder)} layers")
+    modules = [*encoder[-layers:], vlm.vision_model.post_layernorm, vlm.connector]
+    params = [q for m in modules for q in m.parameters()]
+    for q in params:
+        q.requires_grad = True
+    return params
+
+
+def model_image(im, manifest):
+    """Camera frame as the model sees it: optional crop, then pad to a square."""
+    from PIL import ImageOps
+
+    im = im.convert("RGB")
+    crop = manifest.get("image_crop")
+    if crop:
+        if list(im.size) != crop["source_size"]:
+            raise ValueError("Camera frame size does not match the model's crop")
+        im = im.crop(tuple(crop["box"]))
+    return ImageOps.pad(im, tuple(manifest.get("image_size", (256, 256))))
 
 
 def snapshots(lock):
@@ -50,11 +92,8 @@ def load_policy(bundle, device):
     if status_path.exists() and read_json(status_path).get("status") != "complete":
         raise ValueError("Training bundle is incomplete")
     manifest = read_json(Path(bundle) / "landing.json")
-    if (
-        manifest["features"] != FEATURES
-        or manifest["actions"] != ACTIONS
-        or manifest["state_scale"] != STATE_SCALE
-    ):
+    check_feature_names(manifest["features"])
+    if manifest["actions"] != ACTIONS or manifest["state_scale"] != STATE_SCALE:
         raise ValueError("Unsupported landing policy schema")
     paths = snapshots(manifest["model_lock"])
     config = PreTrainedConfig.from_pretrained(bundle)
@@ -75,13 +114,14 @@ def prepare(args):
     if args.output.exists():
         raise ValueError("Output exists")
     lock = read_json(ROOT / "config/vla-model-lock.json")
+    names = FEATURE_SETS[args.features]
     paths = snapshots(lock)
     config = PreTrainedConfig.from_pretrained(paths["policy"])
     config.input_features = {
-        "observation.state": PolicyFeature(
-            type=FeatureType.STATE, shape=(len(FEATURES),)
+        "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(len(names),)),
+        IMAGE_KEY: PolicyFeature(
+            type=FeatureType.VISUAL, shape=(3, args.image_size, args.image_size)
         ),
-        IMAGE_KEY: PolicyFeature(type=FeatureType.VISUAL, shape=(3, 256, 256)),
     }
     config.output_features = {
         "action": PolicyFeature(type=FeatureType.ACTION, shape=(len(ACTIONS),))
@@ -93,7 +133,7 @@ def prepare(args):
     config.load_vlm_weights = False
     config.device = args.device
     config.chunk_size = config.n_action_steps = 1
-    config.resize_imgs_with_padding = (256, 256)
+    config.resize_imgs_with_padding = (args.image_size, args.image_size)
     config.push_to_hub = False
     policy = SmolVLAPolicy.from_pretrained(paths["policy"], config=config).to(
         args.device
@@ -106,10 +146,15 @@ def prepare(args):
         "scenario": scenario,
         "scenario_hash": scenario_hash(scenario),
         "instruction": args.instruction,
-        "features": FEATURES,
+        "features": names,
         "actions": ACTIONS,
         "state_scale": STATE_SCALE,
-        "image_size": [256, 256],
+        "image_size": [args.image_size, args.image_size],
+        **(
+            {"image_crop": {"source_size": list(CAMERA_SIZE), "box": list(WINDOW_CROP)}}
+            if args.window
+            else {}
+        ),
         "action_encoding": "linear_to_minus1_plus1",
         "note": "Pretrained robot weights mapped to aircraft channels; not a pretrained flight controller.",
     }
@@ -128,22 +173,38 @@ def state_normalization(manifest):
     """
     if "state_mean" in manifest:
         return manifest["state_mean"], manifest["state_std"]
-    return [0.0] * len(FEATURES), STATE_SCALE
+    names = manifest.get("features", FEATURES)
+    return [0.0] * len(names), select_features(STATE_SCALE, names)
 
 
 def batch_input(
-    tokenizer, observations, images, instruction, device, actions=None, norm=None
+    tokenizer,
+    observations,
+    images,
+    instruction,
+    device,
+    actions=None,
+    norm=None,
+    manifest=None,
 ):
+    """Model inputs from full FEATURES observations and camera frames.
+
+    The manifest selects the state inputs and how frames are cropped and sized;
+    without one, all FEATURES and padded 256 px frames are used.
+    """
     import numpy as np
     import torch
     from lerobot.utils.constants import OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
-    from PIL import ImageOps
+
+    manifest = manifest or {}
+    names = manifest.get("features", FEATURES)
 
     if any(
         len(row) != len(FEATURES) or not all(math.isfinite(v) for v in row)
         for row in observations
     ):
         raise ValueError("Invalid observation vector")
+    observations = [select_features(row, names) for row in observations]
     if (
         not images
         or len(observations) != len(images)
@@ -158,10 +219,7 @@ def batch_input(
             ):
                 raise ValueError("Invalid training action")
     pixels = [
-        np.asarray(
-            ImageOps.pad(im.convert("RGB"), (256, 256)), dtype=np.float32
-        ).transpose(2, 0, 1)
-        / 255
+        np.asarray(model_image(im, manifest), dtype=np.float32).transpose(2, 0, 1) / 255
         for im in images
     ]
     tokens = tokenizer(
@@ -209,6 +267,7 @@ def predict(policy, tokenizer, manifest, observations, images, device):
         manifest["instruction"],
         device,
         norm=state_normalization(manifest),
+        manifest=manifest,
     )
     with torch.inference_mode():
         action = policy.select_action(batch).cpu().tolist()
@@ -231,16 +290,28 @@ def train(args):
     samples = [s for ep in fitting for s in ep["samples"]]
     val_samples = [s for ep in validation for s in ep["samples"]]
     policy, tokenizer, manifest = load_policy(args.base, args.device)
-    obs = [s["observation"] for s in samples]
+    obs = [select_features(s["observation"], manifest["features"]) for s in samples]
     mean = [sum(col) / len(col) for col in zip(*obs)]
     std = [
         max((sum((v - m) ** 2 for v in col) / len(col)) ** 0.5, 1e-3)
         for col, m in zip(zip(*obs), mean)
     ]
     norm = (mean, std)
-    optimizer = torch.optim.AdamW(
-        [p for p in policy.parameters() if p.requires_grad], lr=args.lr
-    )
+    vision = unfreeze_vision(policy, args.vision_layers)
+    vision_ids = {id(q) for q in vision}
+    groups = [
+        {
+            "params": [
+                q
+                for q in policy.parameters()
+                if q.requires_grad and id(q) not in vision_ids
+            ],
+            "lr": args.lr,
+        }
+    ]
+    if vision:
+        groups.append({"params": vision, "lr": args.vision_lr})
+    optimizer = torch.optim.AdamW(groups)
     history = []
     args.output.mkdir(parents=True)
     atomic_json(args.output / "status.json", {"status": "training"})
@@ -258,6 +329,7 @@ def train(args):
             args.device,
             [s["action"] for s in items],
             norm,
+            manifest,
         )
 
     for step in range(args.steps):
@@ -296,6 +368,7 @@ def train(args):
         "state_std": std,
         "parent_manifest_hash": digest(manifest),
         "parent_weights_sha256": file_digest(args.base / "model.safetensors"),
+        "trained_vision_layers": args.vision_layers,
     }
     atomic_json(args.output / "landing.json", manifest)
     atomic_json(
@@ -305,6 +378,9 @@ def train(args):
             "steps": args.steps,
             "batch_size": args.batch_size,
             "lr": args.lr,
+            "vision_layers": args.vision_layers,
+            "vision_lr": args.vision_lr if args.vision_layers else None,
+            "vision_parameters": sum(q.numel() for q in vision),
             "history": history,
             "train_episodes": [
                 {k: v for k, v in ep.items() if k != "samples"} for ep in fitting
@@ -392,7 +468,7 @@ def check(args):
         tokenizer,
         manifest,
         [observation],
-        [Image.new("RGB", (256, 256))],
+        [Image.new("RGB", CAMERA_SIZE)],
         args.device,
     )
     report = {
@@ -406,11 +482,12 @@ def check(args):
         batch = batch_input(
             tokenizer,
             [observation],
-            [Image.new("RGB", (256, 256))],
+            [Image.new("RGB", CAMERA_SIZE)],
             manifest["instruction"],
             args.device,
             [[0, 0, 0, 0.3]],
             state_normalization(manifest),
+            manifest,
         )
         optimizer = torch.optim.AdamW(
             [p for p in policy.parameters() if p.requires_grad], lr=1e-4
@@ -441,6 +518,18 @@ def main():
     q.add_argument("--scenario", type=Path, required=True)
     q.add_argument("--output", type=Path, required=True)
     q.add_argument("--instruction", default=INSTRUCTION)
+    q.add_argument(
+        "--features",
+        choices=sorted(FEATURE_SETS),
+        default="all",
+        help="State inputs: all simulator values, or only what the panel shows",
+    )
+    q.add_argument(
+        "--window",
+        action="store_true",
+        help="Crop the windshield view (WINDOW_CROP) from the camera frame",
+    )
+    q.add_argument("--image-size", type=int, default=256, help="Square model input")
     q = sub.add_parser("train")
     q.add_argument("episodes", nargs="+", type=Path)
     q.add_argument("--base", type=Path, required=True)
@@ -449,6 +538,13 @@ def main():
     q.add_argument("--batch-size", type=int, default=1)
     q.add_argument("--lr", type=float, default=1e-4)
     q.add_argument("--log-every", type=int, default=50)
+    q.add_argument(
+        "--vision-layers",
+        type=int,
+        default=0,
+        help="Also train the last N vision encoder layers and the image connector",
+    )
+    q.add_argument("--vision-lr", type=float, default=1e-5)
     q = sub.add_parser("serve")
     q.add_argument("--model", type=Path, required=True)
     q.add_argument("--bridge", type=Path, required=True)
@@ -460,9 +556,16 @@ def main():
         q.add_argument("--seed", type=int, default=42)
     a = p.parse_args()
     if a.command == "train" and (
-        a.steps < 1 or a.batch_size < 1 or a.log_every < 1 or not 0 < a.lr < 1
+        a.steps < 1
+        or a.batch_size < 1
+        or a.log_every < 1
+        or not 0 < a.lr < 1
+        or a.vision_layers < 0
+        or not 0 < a.vision_lr < 1
     ):
         p.error("Invalid training parameters")
+    if a.command == "prepare" and (a.image_size < 64 or a.image_size % 16):
+        p.error("Image size must be a multiple of 16 (patch size), at least 64")
     globals()[a.command](a)
 
 

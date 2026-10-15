@@ -66,6 +66,34 @@ FEATURES = [
     "yaw_rate",
     "wow",
 ]
+# What a C172P pilot reads on the panel (altimeter, airspeed indicator, vertical
+# speed indicator, attitude indicator, heading indicator, turn coordinator) or
+# feels (touchdown). Position relative to the runway, height above the ground and
+# ground speed are not on the panel; a policy limited to these must see them.
+INSTRUMENT_FEATURES = [
+    "height_m",
+    "airspeed_kt",
+    "down_mps",
+    "roll_deg",
+    "pitch_deg",
+    "heading_sin",
+    "heading_cos",
+    "yaw_rate",
+    "wow",
+]
+
+
+def check_feature_names(names):
+    if not names or len(set(names)) != len(names) or not set(names) <= set(FEATURES):
+        raise ValueError("Unsupported feature selection")
+    return names
+
+
+def select_features(observation, names):
+    """Pick named entries from a full FEATURES vector, in the order of names."""
+    if len(observation) != len(FEATURES):
+        raise ValueError("Invalid observation vector")
+    return [observation[FEATURES.index(name)] for name in check_feature_names(names)]
 
 
 def digest(value):
@@ -133,7 +161,9 @@ def initial_state(scenario, seed, profile=NOMINAL_START):
     """Start state from the runway-relative preset plus a seeded uniform offset.
 
     Seed 0 is the nominal start without offsets. A training start profile moves
-    the start closer on the same path and widens the offsets, scaled with distance.
+    the start closer on the same path and widens the offsets, scaled with distance
+    unless the profile sets "scale_offsets": false (large offsets close in, to
+    show how to recover near the runway).
     """
     if not isinstance(seed, int) or isinstance(seed, bool) or seed < 0:
         raise ValueError("Seed must be a non-negative integer")
@@ -151,8 +181,9 @@ def initial_state(scenario, seed, profile=NOMINAL_START):
         distance = start["distance_m"] * scale
         start["height_ft"] *= (distance + aim) / (start["distance_m"] + aim)
         start["distance_m"] = distance
+        shrink = scale if p.get("scale_offsets", True) else 1.0
         variation = {
-            k: v * scale if k in ("cross_m", "height_ft") else v
+            k: v * shrink if k in ("cross_m", "height_ft") else v
             for k, v in p["variation"].items()
         }
     rng = random.Random(seed)

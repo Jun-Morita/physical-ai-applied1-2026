@@ -12,7 +12,7 @@ Physical AI 2026 応用編1（東京大学 松尾・岩澤研究室）の最終�
 
 ## 結果の概要
 
-評価用の開始条件5通り（番号1000〜1004、学習に使っていない開始位置）で、追加学習の前後を比べました。
+評価用の5ケース（乱数の番号1000〜1004。ケースごとに飛行の開始位置が異なり、いずれも学習に使っていない）で、追加学習の前後を比べました。
 
 | 項目 | 学習前 | 学習後 |
 | --- | --- | --- |
@@ -181,6 +181,13 @@ uv run --project environments/vla --locked python -m landing.vla check \
 
 事前学習済みの `lerobot/smolvla_base` を、航空機の状態17個・操作4つに付け替えたモデルを作ります。版は `config/vla-model-lock.json` に固定しています。
 
+`--features instruments` を付けると、状態の入力を、パイロットが計器で読める9個（高度計の高さ、対気速度、降下率、バンク、ピッチ、方位のずれ、旋回の速さ、接地）に限ったモデルを作ります。滑走路までの距離や横ずれ、対地高度、対地速度は入力せず、画像から読ませます。収録データは17個のまま記録し、モデルが使う値だけを選んで入力します。
+
+```bash
+uv run --project environments/vla --locked python -m landing.vla prepare --features instruments \
+  --scenario config/scenarios/c172p-rjtt-34r-approach.json --output runs/vla/c172p-base-instruments
+```
+
 ### 4. 学習前のモデルで飛ばす（評価）
 
 Ubuntuで推論ワーカーを起動し、`VLA worker ready` が表示されるのを待ちます。
@@ -227,7 +234,17 @@ python3 -m landing.compare \
 
 比較では、前後が同じ評価用の番号の組であること、同じ条件であることを確認します。失敗や中断した飛行も含めて、全項目の合格率、接地できた割合、項目ごとの合格数を集計します。
 
-### 7. 比較用：数値の状態だけを使うMLP（任意）
+### 7. AIが何に反応しているかを調べる（感度解析）
+
+評価で飛んだ記録の画像と状態をモデルに入れ直し、状態を1つずつ±0.1標準偏差ずらしたときの操作の変化（中心差分）と、画像だけ・状態だけを別の場面のものに差し替えたときの変化を求めます。FlightGearは使いません（GPUで約25分）。手法は2002年のパイロットモデルの研究（doi:10.1299/jsmetld.2002.11.373）にならっています。
+
+```bash
+uv run --project environments/vla --locked python scripts/analyze_sensitivity.py \
+  --model runs/vla/c172p-expert-wide-norm-15000 \
+  --output runs/analysis/sensitivity.json runs/eval/vla-expert-wide-norm-15000-100?
+```
+
+### 8. 比較用：数値の状態だけを使うMLP（任意）
 
 画像を使わない小さなニューラルネットでも、同じデータで模倣学習できます。
 
@@ -309,6 +326,7 @@ C172Pは、空中で開始した5秒後に、機体側のスクリプトがフ�
 | `scripts/fly_c172p.ps1` | 起動から収録・評価飛行までを1コマンドで行う |
 | `scripts/start_flightgear.ps1` | シナリオと開始位置を指定してFlightGearを起動する |
 | `scripts/offline_autoland.py` | JSBSimでの高速な試行 |
+| `scripts/analyze_sensitivity.py` | 学習後のモデルの感度解析（入力ごとの反応、画像と状態の効き） |
 | `config/scenarios/` | 機種ごとのシナリオ（開始条件・評価基準） |
 | `config/protocols/` | FlightGearとのUDP通信の定義 |
 | `tests/` | 模擬データによる回帰テスト |
@@ -324,11 +342,41 @@ uv run --locked python -m unittest discover -s tests -v
 
 模擬データと模擬通信による34件のテストで、評価、収録の異常処理、データの検査、学習データの対応付けなどを確認します。
 
+## レポートの図とPDFの作成
+
+図3（学習前後の飛行経路）、図4（感度解析）と、レポートのPDFは次のコマンドで作り直せます。レポートの原稿は `docs/report/report.html`（1ページずつ組んだA4のHTML）で、WindowsのChromeでPDFに印刷します。
+
+```bash
+uv run --with matplotlib==3.10.3 python scripts/plot_report_figures.py \
+  --before runs/eval/vla-base-aim400-1000 runs/eval/vla-base-aim400-b-100? \
+  --after runs/eval/vla-expert-wide-norm-15000-100? \
+  --font /mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc --output docs/report/figures/fig3-paths.png
+uv run --with matplotlib==3.10.3 python scripts/plot_sensitivity.py runs/analysis/sensitivity.json \
+  --model runs/vla/c172p-expert-wide-norm-15000 \
+  --font /mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc --output docs/report/figures/fig4-sensitivity.png
+python3 scripts/build_report.py \
+  --chrome "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" [--youtube <動画のURL>]
+```
+
+## 提出動画の作成
+
+収録した飛行から、提出用の動画（約2分、1280×720）を作ります。録画は推論のたびに止まっている時間を含むため、各コマを飛行データのシミュレーション時刻に対応づけて並べ直し、停止時間を除いて編集します（動画内に明記）。
+
+```bash
+uv run --with pillow==12.0.0 python scripts/make_video.py \
+  --before runs/eval/vla-base-aim400-1000 --after runs/eval/vla-expert-wide-norm-15000-1000 \
+  --expert datasets/c172p/expert-201 --font /mnt/c/Windows/Fonts/BIZ-UDGothicB.ttc \
+  --music "runs/video/music/Mistake the Getaway.mp3" \
+  --output runs/video/PAI最終課題_Morita_Junichiro.mp4
+```
+
+BGMは Kevin MacLeod「Mistake the Getaway」（[incompetech.com](https://incompetech.com/)、CC BY 4.0）です。音源はリポジトリに含めていないため、同サイトから入手して `runs/video/music/` に置いてください。
+
 ## ドキュメント
 
 | 文書 | 内容 |
 | --- | --- |
-| [レポートのドラフト](docs/report/report-draft.md) | 提出用レポートの原稿 |
+| [レポート](docs/report/report.html) | 提出用レポートの原稿（HTML）。PDFは `docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf`。[下書き](docs/report/report-draft.md) は文章を練るためのMarkdown |
 | [試行錯誤の記録](docs/report-notes.md) | 問題・原因・対策・結果の記録 |
 | [プロジェクト方針](docs/project-plan.md) | 決定事項と経緯（日付つき） |
 | [VLAパイプライン](docs/vla-pipeline.md) | SmolVLAの手順とデータの条件の詳細 |

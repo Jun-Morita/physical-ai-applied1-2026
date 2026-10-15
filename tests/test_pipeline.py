@@ -102,8 +102,11 @@ class PipelineTests(unittest.TestCase):
             self.assertAlmostEqual(near["height_error_ft"], g["height_error_ft"], 0)
             for seed in range(1, 30):
                 offsets = core.initial_state(SCENARIO, seed, name)["offsets"]
-                limit = p["variation"]["height_ft"] * scale
-                self.assertLessEqual(abs(offsets["height_ft"]), limit)
+                # Near-runway profiles keep full-size offsets to teach recovery.
+                shrink = scale if p.get("scale_offsets", True) else 1.0
+                for key in ("height_ft", "cross_m"):
+                    limit = p["variation"][key] * shrink
+                    self.assertLessEqual(abs(offsets[key]), limit)
         # Profiles widen data collection only: the task identity is unchanged.
         bare = {k: v for k, v in SCENARIO.items() if k != "training_starts"}
         self.assertEqual(core.scenario_hash(bare), core.scenario_hash(SCENARIO))

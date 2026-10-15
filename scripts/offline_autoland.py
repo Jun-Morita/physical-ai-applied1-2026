@@ -26,6 +26,7 @@ from landing.core import (  # noqa: E402
     Policy,
     evaluate,
     features,
+    NOMINAL_START,
     initial_state,
     read_json,
 )
@@ -143,8 +144,8 @@ def telemetry(fdm, command):
     return s
 
 
-def fly(scenario, seed, aircraft, work, model=None, limit=240):
-    start = initial_state(scenario, seed)
+def fly(scenario, seed, aircraft, work, model=None, limit=240, profile=NOMINAL_START):
+    start = initial_state(scenario, seed, profile)
     controls = scenario["controls"]
     fdm = make(
         aircraft,
@@ -217,6 +218,7 @@ def main():
     p.add_argument("--seeds", type=int, nargs="+", default=[0])
     p.add_argument("--work", type=Path, default=ROOT / "runs/offline-c172p")
     p.add_argument("--policy", type=Path, help="Trained MLP policy.json")
+    p.add_argument("--start-profile", default=NOMINAL_START)
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
     aircraft = prepare(a.fgdata, a.work.resolve())
@@ -224,7 +226,9 @@ def main():
     model = read_json(a.policy) if a.policy else None
     passed = 0
     for seed in a.seeds:
-        result = fly(scenario, seed, aircraft, a.work.resolve(), model)
+        result = fly(
+            scenario, seed, aircraft, a.work.resolve(), model, profile=a.start_profile
+        )
         failed = [k for k, v in result.get("checks", {}).items() if not v]
         passed += result["candidate_success"]
         metrics = " ".join(

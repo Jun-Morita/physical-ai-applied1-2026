@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import importlib.util
 import json
 import tempfile
 import threading
@@ -47,6 +48,47 @@ class VLATests(unittest.TestCase):
         self.assertEqual(
             state_normalization(stats), (stats["state_mean"], stats["state_std"])
         )
+
+    def test_instrument_features_are_a_panel_subset(self):
+        from landing.core import INSTRUMENT_FEATURES, select_features
+        from landing.vision import STATE_SCALE
+
+        row = list(range(len(FEATURES)))
+        picked = select_features(row, INSTRUMENT_FEATURES)
+        self.assertEqual(picked, [FEATURES.index(n) for n in INSTRUMENT_FEATURES])
+        for hidden in ("along_m", "cross_m", "agl_m", "groundspeed_kt"):
+            self.assertNotIn(hidden, INSTRUMENT_FEATURES)
+        mean, scale = state_normalization({"features": INSTRUMENT_FEATURES})
+        self.assertEqual(len(mean), len(INSTRUMENT_FEATURES))
+        self.assertEqual(scale, select_features(STATE_SCALE, INSTRUMENT_FEATURES))
+        for bad in ([], ["height_m", "height_m"], ["radar_altitude"]):
+            with self.assertRaises(ValueError):
+                select_features(row, bad)
+        with self.assertRaises(ValueError):
+            select_features(row[:-1], INSTRUMENT_FEATURES)
+
+    @unittest.skipUnless(
+        importlib.util.find_spec("PIL"), "Pillow is in environments/vla"
+    )
+    def test_window_crop_view(self):
+        from PIL import Image
+
+        from landing.vla import CAMERA_SIZE, WINDOW_CROP, model_image
+
+        frame = Image.new("RGB", CAMERA_SIZE, (0, 0, 255))
+        x0, y0, x1, y1 = WINDOW_CROP
+        frame.paste((255, 0, 0), (x0, y0, x1, y1))
+        manifest = {
+            "image_size": [512, 512],
+            "image_crop": {"source_size": list(CAMERA_SIZE), "box": list(WINDOW_CROP)},
+        }
+        view = model_image(frame, manifest)
+        self.assertEqual(view.size, (512, 512))
+        self.assertEqual(set(view.getdata()), {(255, 0, 0)})  # only the window
+        with self.assertRaises(ValueError):
+            model_image(Image.new("RGB", (2556, 1365)), manifest)
+        # Models without a crop keep the padded full frame.
+        self.assertEqual(model_image(frame, {}).size, (256, 256))
 
     def test_action_mapping(self):
         self.assertEqual(decode_action([0] * 4), [0, 0, 0, 0.5])
@@ -112,6 +154,30 @@ class VLATests(unittest.TestCase):
             policy.timeout = 0.01
             with self.assertRaises(TimeoutError):
                 policy.predict_frame(state(), SCENARIO, image)
+
+    def test_bridge_accepts_feature_subsets_only(self):
+        from landing.core import INSTRUMENT_FEATURES
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            for names, ok in ((INSTRUMENT_FEATURES, True), (["radar_altitude"], False)):
+                atomic_json(
+                    path / "ready.json",
+                    {
+                        "worker_id": "test",
+                        "manifest": {
+                            "scenario_hash": scenario_hash(SCENARIO),
+                            "instruction": INSTRUCTION,
+                            "features": names,
+                            "actions": ACTIONS,
+                        },
+                    },
+                )
+                if ok:
+                    BridgePolicy(path, SCENARIO, INSTRUCTION)
+                else:
+                    with self.assertRaises(ValueError):
+                        BridgePolicy(path, SCENARIO, INSTRUCTION)
 
     def test_vla_session_pauses_before_inference(self):
         props = {

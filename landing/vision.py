@@ -78,7 +78,11 @@ class BridgePolicy:
             or self.model["instruction"] != instruction
         ):
             raise ValueError("VLA worker scenario/instruction mismatch")
-        if self.model["features"] != FEATURES or self.model["actions"] != ACTIONS:
+        # The request carries all FEATURES; the worker keeps those its model uses.
+        if (
+            not set(self.model["features"]) <= set(FEATURES)
+            or self.model["actions"] != ACTIONS
+        ):
             raise ValueError("VLA worker feature/action schema mismatch")
         self.worker_id = info["worker_id"]
         self.session_id = uuid.uuid4().hex
