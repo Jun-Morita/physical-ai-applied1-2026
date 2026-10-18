@@ -88,11 +88,88 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 core.initial_state(SCENARIO, bad)
 
+    def test_recorded_dagger_starts(self):
+        import subprocess
+        import sys
+
+        r = SCENARIO["runway_geometry"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            # A rollout of a policy on a training seed that drifts right and low.
+            rollout = tmp / "rollout-501"
+            rollout.mkdir()
+            rows = []
+            for i in range(60):
+                along = -3000 + i * 50
+                s = state()
+                pos = core.initial_state(SCENARIO, 0)
+                h = math.radians(r["heading_deg"])
+                cross = 80.0
+                s.update(
+                    latitude=r["latitude"]
+                    + math.degrees(
+                        (along * math.cos(h) - cross * math.sin(h)) / 6371000
+                    ),
+                    longitude=r["longitude"]
+                    + math.degrees(
+                        (along * math.sin(h) + cross * math.cos(h))
+                        / (6371000 * math.cos(math.radians(r["latitude"])))
+                    ),
+                    altitude_ft=pos["altitude_ft"] * (-along + 400) / 4104 - 60,
+                    agl_ft=200,
+                    wow=0,
+                    time=i,
+                )
+                rows.append({"state": s})
+            (rollout / "samples.jsonl").write_text(
+                "\n".join(json.dumps(x) for x in rows) + "\n", encoding="utf-8"
+            )
+            meta = {
+                "purpose": "rollout",
+                "initial": {"seed": 501},
+                "scenario": SCENARIO,
+            }
+            (rollout / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+            out = tmp / "starts.json"
+            cmd = [sys.executable, str(ROOT / "scripts/dagger_starts.py"), str(rollout)]
+            cmd += [
+                "--first-seed",
+                "601",
+                "--output",
+                str(out),
+                "--distances",
+                "2000",
+                "1000",
+            ]
+            subprocess.run(cmd, check=True, capture_output=True)
+            starts = core.read_json(out)["starts"]
+            self.assertEqual(sorted(starts), ["601", "602"])
+            scenario = {
+                **SCENARIO,
+                "training_starts": {"dagger": {"states": str(out)}},
+            }
+            start = core.initial_state(scenario, 601, "dagger")
+            along, cross = core.runway_position(start, r)
+            self.assertAlmostEqual(along, -2000, delta=60)
+            self.assertAlmostEqual(cross, 80, delta=1)
+            with self.assertRaisesRegex(ValueError, "No recorded start"):
+                core.initial_state(scenario, 603, "dagger")
+            with self.assertRaisesRegex(ValueError, "nominal start"):
+                core.initial_state(scenario, 1000, "dagger")
+            # The start file is fixed once written; evaluation flights are refused.
+            self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
+            meta["purpose"] = "evaluation"
+            (rollout / "metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+            cmd[cmd.index(str(out))] = str(tmp / "other.json")
+            self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
+
     def test_training_start_profiles(self):
         r = SCENARIO["runway_geometry"]
         nominal = core.initial_state(SCENARIO, 0)
         g = core.approach_guidance({**state(), **nominal}, SCENARIO)
         for name, p in SCENARIO["training_starts"].items():
+            if "states" in p:  # recorded DAgger starts: see test_recorded_dagger_starts
+                continue
             s = core.initial_state(SCENARIO, 0, name)
             along, _ = core.runway_position(s, r)
             scale = p["distance_scale"]

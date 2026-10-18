@@ -472,7 +472,9 @@ def main():
         q.add_argument("--seconds", type=float, default=240)
         q.add_argument("--timeout", type=float, default=3)
         q.add_argument(
-            "--purpose", choices=["evaluation", "diagnostic"], default="evaluation"
+            "--purpose",
+            choices=["evaluation", "diagnostic", "rollout"],
+            default="evaluation",
         )
         q.add_argument("--video", action="store_true")
         q.add_argument("--ffmpeg", default="ffmpeg")

@@ -155,6 +155,32 @@ def runway_position(state, runway):
 
 # Seeds from this value up are held out for evaluation and never used as demonstrations.
 EVALUATION_SEED_START = 1000
+ROOT = Path(__file__).resolve().parents[1]
+START_KEYS = ("latitude", "longitude", "altitude_ft", "heading_deg", "airspeed_kt")
+
+
+def recorded_start(scenario, seed, profile):
+    """Start state listed for this seed in a profile's "states" file.
+
+    DAgger: the states come from flights of the learned policy, so the expert
+    shows how to recover from situations the policy actually gets into.
+    """
+    p = scenario["training_starts"][profile]
+    starts = read_json(ROOT / p["states"])["starts"]
+    if str(seed) not in starts:
+        raise ValueError(f"No recorded start for seed {seed} in {profile}")
+    s = starts[str(seed)]
+    if not all(
+        isinstance(s.get(k), (int, float)) and math.isfinite(s[k]) for k in START_KEYS
+    ):
+        raise ValueError(f"Invalid recorded start for seed {seed}")
+    return {
+        "seed": seed,
+        "profile": profile,
+        "offsets": {},
+        **{k: float(s[k]) for k in START_KEYS},
+        "source": s.get("source"),
+    }
 
 
 def initial_state(scenario, seed, profile=NOMINAL_START):
@@ -175,6 +201,8 @@ def initial_state(scenario, seed, profile=NOMINAL_START):
         if profile not in scenario.get("training_starts", {}):
             raise ValueError(f"Unknown start profile: {profile}")
         p = scenario["training_starts"][profile]
+        if "states" in p:
+            return recorded_start(scenario, seed, profile)
         scale = p["distance_scale"]
         # Stay on the line from the nominal start to the aiming point.
         aim = scenario.get("guidance", {}).get("aim_point_m", 0)
@@ -414,9 +442,8 @@ if __name__ == "__main__":
     start = initial_state(
         scenario, int(sys.argv[2]), sys.argv[3] if len(sys.argv) > 3 else NOMINAL_START
     )
-    keys = ("latitude", "longitude", "altitude_ft", "heading_deg", "airspeed_kt")
     print(
         json.dumps(
-            {"hash": scenario_hash(scenario), **{k: repr(start[k]) for k in keys}}
+            {"hash": scenario_hash(scenario), **{k: repr(start[k]) for k in START_KEYS}}
         )
     )

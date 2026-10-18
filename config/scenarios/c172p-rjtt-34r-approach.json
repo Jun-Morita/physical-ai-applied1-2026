@@ -37,9 +37,11 @@
     "wide": {"distance_scale": 1.0, "variation": {"cross_m": 150, "height_ft": 150, "heading_deg": 5, "airspeed_kt": 5}},
     "wide-half": {"distance_scale": 0.5, "variation": {"cross_m": 150, "height_ft": 150, "heading_deg": 5, "airspeed_kt": 5}},
     "wide-quarter": {"distance_scale": 0.25, "variation": {"cross_m": 150, "height_ft": 150, "heading_deg": 5, "airspeed_kt": 5}},
+    "near-2500": {"distance_scale": 0.675, "scale_offsets": false, "variation": {"cross_m": 150, "height_ft": 80, "heading_deg": 5, "airspeed_kt": 5}},
     "near-1500": {"distance_scale": 0.405, "scale_offsets": false, "variation": {"cross_m": 100, "height_ft": 60, "heading_deg": 5, "airspeed_kt": 5}},
     "near-1000": {"distance_scale": 0.27, "scale_offsets": false, "variation": {"cross_m": 80, "height_ft": 50, "heading_deg": 5, "airspeed_kt": 5}},
-    "near-600": {"distance_scale": 0.162, "scale_offsets": false, "variation": {"cross_m": 50, "height_ft": 30, "heading_deg": 5, "airspeed_kt": 5}}
+    "near-600": {"distance_scale": 0.162, "scale_offsets": false, "variation": {"cross_m": 50, "height_ft": 30, "heading_deg": 5, "airspeed_kt": 5}},
+    "dagger-r1": {"states": "config/dagger/c172p-r1.json"}
   },
   "controls": {
     "flaps": 0.3333,

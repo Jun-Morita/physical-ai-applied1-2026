@@ -7,6 +7,9 @@ param(
     [string]$Policy,
     # Fly SmolVLA through a running worker's bridge directory on an evaluation seed.
     [string]$VlaBridge,
+    # DAgger rollout: fly the policy on a training seed (1-999) to find the states it
+    # gets into; saved under runs/rollouts, never used for evaluation.
+    [switch]$Rollout,
     # Training start profile (wide, wide-half, wide-quarter); evaluation uses nominal.
     [string]$StartProfile = "nominal",
     [string]$FFmpeg = "C:\ffmpeg\bin\ffmpeg.exe"
@@ -17,11 +20,17 @@ $scenario = "config/scenarios/c172p-rjtt-34r-approach.json"
 if ((@($Autoland.IsPresent, [bool]$Policy, [bool]$VlaBridge) -eq $true).Count -gt 1) {
     throw "Choose one of -Autoland, -Policy and -VlaBridge"
 }
+if ($Rollout -and -not ($Policy -or $VlaBridge)) { throw "-Rollout needs -Policy or -VlaBridge" }
 if ($Policy -or $VlaBridge) {
-    if ($Seed -lt 1000) { throw "Evaluate policies on held-out seeds 1000+" }
-    if ($StartProfile -ne "nominal") { throw "Evaluate policies from the nominal start" }
     $name = if ($Policy) { Split-Path (Split-Path $Policy -Parent) -Leaf } else { Split-Path $VlaBridge -Leaf }
-    $output = "runs/eval/$name-$Seed"
+    if ($Rollout) {
+        if ($Seed -gt 999) { throw "Rollouts use training seeds 1-999; 1000+ are held out" }
+        $output = "runs/rollouts/$name-$Seed"
+    } else {
+        if ($Seed -lt 1000) { throw "Evaluate policies on held-out seeds 1000+" }
+        if ($StartProfile -ne "nominal") { throw "Evaluate policies from the nominal start" }
+        $output = "runs/eval/$name-$Seed"
+    }
 } else {
     if ($Seed -gt 999) { throw "Training flights use seeds 1-999" }
     $kind = if ($Autoland) { "expert" } else { "flight" }
@@ -43,14 +52,15 @@ Write-Host "Ready. Recording $output; the flight starts now."
 # Images are required for VLA training; the MP4 is for review and the video.
 # Wall-clock limit: the expert pauses for every capture, so it needs longer.
 $seconds = if ($Autoland) { "900" } else { "240" }
+$purpose = if ($Rollout) { "rollout" } else { "evaluation" }
 if ($Policy) {
     # No images: the MLP reads telemetry only and runs without pauses.
-    & py -3 -m landing.session fly --policy $Policy --scenario $scenario --output $output --seconds $seconds --video --ffmpeg $FFmpeg
+    & py -3 -m landing.session fly --policy $Policy --scenario $scenario --output $output --seconds $seconds --purpose $purpose --video --ffmpeg $FFmpeg
     exit $LASTEXITCODE
 }
 if ($VlaBridge) {
     # The simulation pauses for every capture and inference, so allow a long wall-clock time.
-    & py -3 -m landing.session fly --vla-bridge $VlaBridge --scenario $scenario --output $output --seconds 1800 --image-period 0.2 --video --ffmpeg $FFmpeg
+    & py -3 -m landing.session fly --vla-bridge $VlaBridge --scenario $scenario --output $output --seconds 1800 --image-period 0.2 --purpose $purpose --video --ffmpeg $FFmpeg
     exit $LASTEXITCODE
 }
 $common = @("--scenario", $scenario, "--output", $output, "--seconds", $seconds, "--images", "--image-period", "0.2", "--video", "--ffmpeg", $FFmpeg)
