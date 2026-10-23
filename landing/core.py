@@ -83,17 +83,80 @@ INSTRUMENT_FEATURES = [
 ]
 
 
+# ILS course and glide slope deviation, as the needles of the NAV indicator show
+# them: degrees right of the localizer course and above the glide path, pegged at
+# full scale. Derived from the recorded position, so earlier flights need no
+# re-recording and the FEATURES vector (stored with earlier models) is unchanged.
+ILS_FEATURES = ["localizer_deg", "glideslope_deg"]
+ILS_FULL_SCALE_DEG = {"localizer_deg": 2.5, "glideslope_deg": 0.7}
+# DME paired with the ILS (RJTT 34R DME-ILS, beside the glide slope antenna):
+# slant range in nautical miles, shown in 0.1 NM steps.
+DME_FEATURES = ["dme_nm"]
+NAV_FEATURES = ILS_FEATURES + DME_FEATURES
+NAV_SCALE = ILS_FULL_SCALE_DEG | {"dme_nm": 5.0}
+# Below this altimeter height the pilot stops following the glide slope and lands
+# by the view; the needle then reads 0. Otherwise every flare, which ends below
+# the glide path by design, would teach "needle full down -> idle".
+ILS_DECISION_HEIGHT_M = 100 * 0.3048
+
+
+def ils_geometry(scenario):
+    """Localizer at the far end of the runway, glide slope abeam the aiming point."""
+    r, g = scenario["runway_geometry"], scenario["guidance"]
+    return {
+        "localizer_m": r["length_m"],
+        "glideslope_m": g["aim_point_m"],
+        "glide_slope_deg": g["glide_slope_deg"],
+        "decision_height_m": ILS_DECISION_HEIGHT_M,
+    }
+
+
+def ils_deviation(observation, ils):
+    along, cross, height = (
+        observation[FEATURES.index(k)] for k in ("along_m", "cross_m", "height_m")
+    )
+    localizer = math.degrees(math.atan2(cross, ils["localizer_m"] - along))
+    # Past the glide slope antenna the angle has no meaning.
+    distance = max(ils["glideslope_m"] - along, 50.0)
+    glideslope = math.degrees(math.atan2(height, distance)) - ils["glide_slope_deg"]
+    if ils.get("decision_height_m") and height < ils["decision_height_m"]:
+        glideslope = 0.0
+    needles = {
+        name: max(-ILS_FULL_SCALE_DEG[name], min(ILS_FULL_SCALE_DEG[name], value))
+        for name, value in (
+            ("localizer_deg", localizer),
+            ("glideslope_deg", glideslope),
+        )
+    }
+    slant = math.dist((along, cross, height), (ils["glideslope_m"], 0.0, 0.0))
+    return needles | {"dme_nm": round(slant / 1852, 1)}
+
+
 def check_feature_names(names):
-    if not names or len(set(names)) != len(names) or not set(names) <= set(FEATURES):
+    known = set(FEATURES) | set(NAV_FEATURES)
+    if not names or len(set(names)) != len(names) or not set(names) <= known:
         raise ValueError("Unsupported feature selection")
     return names
 
 
-def select_features(observation, names):
-    """Pick named entries from a full FEATURES vector, in the order of names."""
+def select_features(observation, names, ils=None):
+    """Named entries of a full FEATURES vector, in the order of names.
+
+    ILS deviations and the DME distance are computed from the position with the
+    model's ILS geometry.
+    """
     if len(observation) != len(FEATURES):
         raise ValueError("Invalid observation vector")
-    return [observation[FEATURES.index(name)] for name in check_feature_names(names)]
+    check_feature_names(names)
+    derived = {}
+    if set(names) & set(NAV_FEATURES):
+        if ils is None:
+            raise ValueError("ILS features need the ILS geometry")
+        derived = ils_deviation(observation, ils)
+    return [
+        derived[name] if name in derived else observation[FEATURES.index(name)]
+        for name in names
+    ]
 
 
 def digest(value):
@@ -174,13 +237,20 @@ def recorded_start(scenario, seed, profile):
         isinstance(s.get(k), (int, float)) and math.isfinite(s[k]) for k in START_KEYS
     ):
         raise ValueError(f"Invalid recorded start for seed {seed}")
-    return {
+    start = {
         "seed": seed,
         "profile": profile,
         "offsets": {},
         **{k: float(s[k]) for k in START_KEYS},
         "source": s.get("source"),
     }
+    # Optional attitude: a nose-high start hides the runway from the windshield view.
+    if "pitch_deg" in s:
+        pitch = s["pitch_deg"]
+        if not isinstance(pitch, (int, float)) or not -20 <= pitch <= 20:
+            raise ValueError(f"Invalid recorded pitch for seed {seed}")
+        start["pitch_deg"] = float(pitch)
+    return start
 
 
 def initial_state(scenario, seed, profile=NOMINAL_START):
@@ -444,6 +514,11 @@ if __name__ == "__main__":
     )
     print(
         json.dumps(
-            {"hash": scenario_hash(scenario), **{k: repr(start[k]) for k in START_KEYS}}
+            {
+                "hash": scenario_hash(scenario),
+                **{
+                    k: repr(start[k]) for k in START_KEYS + ("pitch_deg",) if k in start
+                },
+            }
         )
     )

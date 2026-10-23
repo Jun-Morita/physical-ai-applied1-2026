@@ -15,7 +15,12 @@ from landing import session
 from landing.compare import compare
 from landing.core import ACTIONS, FEATURES, read_json, scenario_hash
 from landing.vision import INSTRUCTION, BridgePolicy, atomic_json, capture
-from landing.vla import decode_action, state_normalization, training_episodes
+from landing.vla import (
+    decode_action,
+    profile_weights,
+    state_normalization,
+    training_episodes,
+)
 
 
 class VLATests(unittest.TestCase):
@@ -67,6 +72,72 @@ class VLATests(unittest.TestCase):
         with self.assertRaises(ValueError):
             select_features(row[:-1], INSTRUMENT_FEATURES)
 
+    def test_ils_needles_from_position(self):
+        import math
+
+        from landing.core import (
+            ILS_FEATURES,
+            features,
+            ils_geometry,
+            initial_state,
+            select_features,
+        )
+        from landing.vla import FEATURE_SETS
+
+        ils = ils_geometry(SCENARIO)
+        names = FEATURE_SETS["instruments-ils"]
+        self.assertEqual(names[-2:], ILS_FEATURES)
+        # The nominal start lies on the glide path to the aiming point.
+        start = {**state(), **initial_state(SCENARIO, 0)}
+        loc, gs = select_features(features(start, SCENARIO), names, ils)[-2:]
+        self.assertAlmostEqual(loc, 0, places=6)
+        self.assertAlmostEqual(gs, 0, delta=0.02)
+
+        def needles(along, cross, height):
+            row = [0.0] * len(FEATURES)
+            for k, v in (("along_m", along), ("cross_m", cross), ("height_m", height)):
+                row[FEATURES.index(k)] = v
+            return select_features(row, ILS_FEATURES, ils)
+
+        slope = math.tan(math.radians(ils["glide_slope_deg"]))
+        on_path = (ils["glideslope_m"] + 2000) * slope
+        loc, gs = needles(-2000, 40, on_path + 20)
+        self.assertGreater(loc, 0)  # right of course
+        self.assertGreater(gs, 0)  # above the path
+        loc, gs = needles(-2000, -40, on_path - 20)
+        self.assertLess(loc, 0)
+        self.assertLess(gs, 0)
+        # Far off, the needles stay pegged at full scale.
+        self.assertEqual(needles(-1000, 2000, 1000), [2.5, 0.7])
+        self.assertEqual(needles(-1000, -2000, 40), [-2.5, -0.7])
+        # Below the decision height the glide slope is no longer followed.
+        self.assertEqual(needles(1500, 0, 0), [0.0, 0.0])
+        self.assertEqual(needles(-200, 0, 20)[1], 0.0)
+        self.assertLess(needles(-200, 0, 31)[1], 0)
+        # Models trained before the decision height keep their needle.
+        old = {k: v for k, v in ils.items() if k != "decision_height_m"}
+        row = [0.0] * len(FEATURES)
+        row[FEATURES.index("along_m")] = 1500
+        self.assertEqual(select_features(row, ILS_FEATURES, old), [0.0, -0.7])
+        # DME: slant range to the antenna beside the glide slope, in 0.1 NM steps.
+        dme = FEATURE_SETS["instruments-ils-dme"]
+        self.assertEqual(dme[-3:], ILS_FEATURES + ["dme_nm"])
+
+        def distance(along, cross, height):
+            row = [0.0] * len(FEATURES)
+            for k, v in (("along_m", along), ("cross_m", cross), ("height_m", height)):
+                row[FEATURES.index(k)] = v
+            return select_features(row, ["dme_nm"], ils)[0]
+
+        self.assertEqual(distance(ils["glideslope_m"] - 1852 * 2, 0, 0), 2.0)
+        self.assertEqual(distance(ils["glideslope_m"] - 3000, 400, 300), 1.6)
+        self.assertEqual(distance(ils["glideslope_m"], 0, 0), 0.0)
+        self.assertEqual(state_normalization({"features": dme})[1][-1], 5.0)
+        with self.assertRaisesRegex(ValueError, "ILS geometry"):
+            select_features([0.0] * len(FEATURES), names)
+        mean, scale = state_normalization({"features": names})
+        self.assertEqual(scale[-2:], [2.5, 0.7])
+
     @unittest.skipUnless(
         importlib.util.find_spec("PIL"), "Pillow is in environments/vla"
     )
@@ -89,6 +160,20 @@ class VLATests(unittest.TestCase):
             model_image(Image.new("RGB", (2556, 1365)), manifest)
         # Models without a crop keep the padded full frame.
         self.assertEqual(model_image(frame, {}).size, (256, 256))
+
+    def test_profile_weights(self):
+        episodes = [{"profile": "nominal"}, {"profile": "dagger-r2-high"}]
+        self.assertEqual(profile_weights(None, episodes), {})
+        self.assertEqual(
+            profile_weights(["dagger-r2-high=10"], episodes), {"dagger-r2-high": 10.0}
+        )
+        for bad in (["dagger-r2-high"], ["dagger-r2-high=0"], ["dagger-r2-high=nan"]):
+            with self.assertRaisesRegex(ValueError, "positive factor"):
+                profile_weights(bad, episodes)
+        with self.assertRaisesRegex(ValueError, "twice"):
+            profile_weights(["nominal=2", "nominal=3"], episodes)
+        with self.assertRaisesRegex(ValueError, "No training flight"):
+            profile_weights(["near-600=5"], episodes)
 
     def test_action_mapping(self):
         self.assertEqual(decode_action([0] * 4), [0, 0, 0, 0.5])

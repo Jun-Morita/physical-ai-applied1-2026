@@ -13,9 +13,13 @@ from pathlib import Path
 from .core import (
     ACTIONS,
     FEATURES,
+    ILS_FEATURES,
     INSTRUMENT_FEATURES,
+    NAV_FEATURES,
+    NAV_SCALE,
     LIMITS,
     check_feature_names,
+    ils_geometry,
     clamp_actions,
     digest,
     read_json,
@@ -28,7 +32,14 @@ from .vision import INSTRUCTION, STATE_SCALE
 
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE_KEY = "observation.images.camera1"
-FEATURE_SETS = {"all": FEATURES, "instruments": INSTRUMENT_FEATURES}
+FEATURE_SETS = {
+    "all": FEATURES,
+    "instruments": INSTRUMENT_FEATURES,
+    # The ILS course and glide slope needles are on the panel too.
+    "instruments-ils": INSTRUMENT_FEATURES + ILS_FEATURES,
+    # ... and the DME distance paired with the ILS.
+    "instruments-ils-dme": INSTRUMENT_FEATURES + NAV_FEATURES,
+}
 CAMERA_SIZE = (1280, 720)  # FlightGear window used for every training flight
 # Square of the view through the windshield, centred on the runway on final:
 # no menu bar, and little of the panel (its values are numeric inputs).
@@ -147,6 +158,7 @@ def prepare(args):
         "scenario_hash": scenario_hash(scenario),
         "instruction": args.instruction,
         "features": names,
+        **({"ils": ils_geometry(scenario)} if set(names) & set(NAV_FEATURES) else {}),
         "actions": ACTIONS,
         "state_scale": STATE_SCALE,
         "image_size": [args.image_size, args.image_size],
@@ -174,7 +186,8 @@ def state_normalization(manifest):
     if "state_mean" in manifest:
         return manifest["state_mean"], manifest["state_std"]
     names = manifest.get("features", FEATURES)
-    return [0.0] * len(names), select_features(STATE_SCALE, names)
+    scale = dict(zip(FEATURES, STATE_SCALE)) | NAV_SCALE
+    return [0.0] * len(names), [scale[name] for name in names]
 
 
 def batch_input(
@@ -186,11 +199,13 @@ def batch_input(
     actions=None,
     norm=None,
     manifest=None,
+    selected=False,
 ):
     """Model inputs from full FEATURES observations and camera frames.
 
     The manifest selects the state inputs and how frames are cropped and sized;
-    without one, all FEATURES and padded 256 px frames are used.
+    without one, all FEATURES and padded 256 px frames are used. With selected,
+    observations already hold the model's inputs (for sensitivity analysis).
     """
     import numpy as np
     import torch
@@ -199,12 +214,15 @@ def batch_input(
     manifest = manifest or {}
     names = manifest.get("features", FEATURES)
 
+    width = len(names) if selected else len(FEATURES)
     if any(
-        len(row) != len(FEATURES) or not all(math.isfinite(v) for v in row)
+        len(row) != width or not all(math.isfinite(v) for v in row)
         for row in observations
     ):
         raise ValueError("Invalid observation vector")
-    observations = [select_features(row, names) for row in observations]
+    if not selected:
+        ils = manifest.get("ils")
+        observations = [select_features(row, names, ils) for row in observations]
     if (
         not images
         or len(observations) != len(images)
@@ -257,7 +275,7 @@ def decode_action(values):
     )
 
 
-def predict(policy, tokenizer, manifest, observations, images, device):
+def predict(policy, tokenizer, manifest, observations, images, device, selected=False):
     import torch
 
     batch = batch_input(
@@ -268,10 +286,34 @@ def predict(policy, tokenizer, manifest, observations, images, device):
         device,
         norm=state_normalization(manifest),
         manifest=manifest,
+        selected=selected,
     )
     with torch.inference_mode():
         action = policy.select_action(batch).cpu().tolist()
     return [decode_action(row) for row in action]
+
+
+def profile_weights(specs, episodes):
+    """Sampling weight per start profile, from "profile=factor" options.
+
+    DAgger: the newest round's demonstrations are few next to the earlier data,
+    so they can be drawn more often without copying or altering any recording.
+    """
+    weights = {}
+    for spec in specs or []:
+        name, sep, factor = spec.partition("=")
+        try:
+            value = float(factor)
+        except ValueError:
+            value = float("nan")
+        if not sep or not name or not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Expected profile=factor with a positive factor: {spec}")
+        if name in weights:
+            raise ValueError(f"Profile weighted twice: {name}")
+        if not any(ep["profile"] == name for ep in episodes):
+            raise ValueError(f"No training flight starts from profile {name}")
+        weights[name] = value
+    return weights
 
 
 def train(args):
@@ -288,9 +330,16 @@ def train(args):
     nval = max(1, round(len(episodes) * 0.2))
     validation, fitting = episodes[:nval], episodes[nval:]
     samples = [s for ep in fitting for s in ep["samples"]]
+    weights = profile_weights(args.weight_profile, fitting)
+    sample_weights = [
+        weights.get(ep["profile"], 1.0) for ep in fitting for _ in ep["samples"]
+    ]
     val_samples = [s for ep in validation for s in ep["samples"]]
     policy, tokenizer, manifest = load_policy(args.base, args.device)
-    obs = [select_features(s["observation"], manifest["features"]) for s in samples]
+    obs = [
+        select_features(s["observation"], manifest["features"], manifest.get("ils"))
+        for s in samples
+    ]
     mean = [sum(col) / len(col) for col in zip(*obs)]
     std = [
         max((sum((v - m) ** 2 for v in col) / len(col)) ** 0.5, 1e-3)
@@ -334,7 +383,7 @@ def train(args):
 
     for step in range(args.steps):
         policy.train()
-        batch = make_batch(rng.choices(samples, k=args.batch_size))
+        batch = make_batch(rng.choices(samples, sample_weights, k=args.batch_size))
         loss, _ = policy(batch)
         if not torch.isfinite(loss):
             raise ValueError("Non-finite training loss")
@@ -381,6 +430,7 @@ def train(args):
             "vision_layers": args.vision_layers,
             "vision_lr": args.vision_lr if args.vision_layers else None,
             "vision_parameters": sum(q.numel() for q in vision),
+            "profile_weights": weights,
             "history": history,
             "train_episodes": [
                 {k: v for k, v in ep.items() if k != "samples"} for ep in fitting
@@ -545,6 +595,12 @@ def main():
         help="Also train the last N vision encoder layers and the image connector",
     )
     q.add_argument("--vision-lr", type=float, default=1e-5)
+    q.add_argument(
+        "--weight-profile",
+        action="append",
+        metavar="PROFILE=FACTOR",
+        help="Draw flights from this start profile FACTOR times as often",
+    )
     q = sub.add_parser("serve")
     q.add_argument("--model", type=Path, required=True)
     q.add_argument("--bridge", type=Path, required=True)

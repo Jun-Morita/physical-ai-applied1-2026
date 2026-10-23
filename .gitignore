@@ -219,6 +219,10 @@ __marimo__/
 
 # Course originals: redistribution restricted by course materials.
 /materials/lectures/
+# Notes summarising the restricted course materials stay local.
+/materials/README.md
+/docs/lecture-notes.md
+/docs/foundations-notes.md
 
 # Windows download metadata
 *:Zone.Identifier

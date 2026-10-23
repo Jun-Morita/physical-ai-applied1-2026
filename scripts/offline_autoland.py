@@ -157,6 +157,7 @@ def fly(scenario, seed, aircraft, work, model=None, limit=240, profile=NOMINAL_S
             "ic/psi-true-deg": start["heading_deg"],
             "ic/lat-geod-deg": start["latitude"],
             "ic/long-gc-deg": start["longitude"],
+            **({"ic/theta-deg": start["pitch_deg"]} if "pitch_deg" in start else {}),
             "fcs/flap-cmd-norm": controls["flaps"],
             "/controls/flight/flaps": controls["flaps"],
             "fcs/mixture-cmd-norm[0]": 1,

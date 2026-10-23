@@ -152,10 +152,41 @@ class PipelineTests(unittest.TestCase):
             along, cross = core.runway_position(start, r)
             self.assertAlmostEqual(along, -2000, delta=60)
             self.assertAlmostEqual(cross, 80, delta=1)
+            self.assertEqual(start["pitch_deg"], rows[0]["state"]["pitch_deg"])
+            # The rollout stays below the path: nothing to keep with --only-high.
+            high = cmd[:5] + ["--output", str(tmp / "high.json"), "--only-high"]
+            high += ["--distances", "2000", "1000"]
+            done = subprocess.run(high, capture_output=True, text=True)
+            self.assertIn("No off-path states", done.stderr)
             with self.assertRaisesRegex(ValueError, "No recorded start"):
                 core.initial_state(scenario, 603, "dagger")
             with self.assertRaisesRegex(ValueError, "nominal start"):
                 core.initial_state(scenario, 1000, "dagger")
+            # Mirrored starts: the other side of the centerline and the glide path.
+            mirror = tmp / "mirror.json"
+            mcmd = [sys.executable, str(ROOT / "scripts/dagger_starts.py")]
+            mcmd += [
+                "--mirror",
+                str(out),
+                "--first-seed",
+                "651",
+                "--output",
+                str(mirror),
+            ]
+            subprocess.run(mcmd, check=True, capture_output=True)
+            mirrored = core.read_json(mirror)["starts"]
+            self.assertEqual(sorted(mirrored), ["651", "652"])
+            for n, m in (("601", "651"), ("602", "652")):
+                s, t = starts[n], mirrored[m]
+                along, cross = core.runway_position(t, r)
+                self.assertAlmostEqual(along, -s["distance_m"], delta=60)
+                self.assertAlmostEqual(cross, -s["cross_m"], delta=0.01)
+                self.assertAlmostEqual(t["height_error_ft"], -s["height_error_ft"], 3)
+                self.assertAlmostEqual(
+                    t["heading_deg"] - r["heading_deg"],
+                    r["heading_deg"] - s["heading_deg"],
+                    6,
+                )
             # The start file is fixed once written; evaluation flights are refused.
             self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
             meta["purpose"] = "evaluation"

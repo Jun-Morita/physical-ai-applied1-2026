@@ -322,6 +322,8 @@ def run(args):
         touchdown = None
         next_guidance = 0.0
         rollout_seconds = scenario["evaluation"]["min_rollout_seconds"]
+        # Scenarios recorded before the limit existed have no time limit.
+        max_seconds = scenario["evaluation"].get("max_flight_seconds")
         end_reason = "duration_limit"
         stopped = None
         next_image_time = float("-inf")
@@ -418,6 +420,11 @@ def run(args):
                         break
                 else:
                     stopped = None
+                # No touchdown within the limit (flying on past the runway) fails
+                # the flight; an approach from the nominal start lands in ~2.5 min.
+                if touchdown is None and max_seconds and state["time"] >= max_seconds:
+                    end_reason = "time_limit"
+                    break
                 # The task ends after a short rollout; deceleration is out of scope.
                 if touchdown is None:
                     touchdown = touchdown_index([r["state"] for r in rows[-2:]])

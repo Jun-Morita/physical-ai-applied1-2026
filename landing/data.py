@@ -9,6 +9,7 @@ from .core import (
     EVALUATION_SEED_START,
     FIELDS,
     LIMITS,
+    NOMINAL_START,
     SCHEMA,
     digest,
     scenario_hash,
@@ -204,6 +205,7 @@ def training_episodes(paths, manifest):
             {
                 "path": str(path),
                 "hash": h,
+                "profile": (meta.get("initial") or {}).get("profile", NOMINAL_START),
                 "samples": samples,
                 "view": next(iter(views)),
             }

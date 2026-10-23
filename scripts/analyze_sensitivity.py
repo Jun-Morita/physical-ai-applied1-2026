@@ -24,7 +24,7 @@ import torch
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from landing.core import ACTIONS, FEATURES, features  # noqa: E402
+from landing.core import ACTIONS, features, select_features  # noqa: E402
 from landing.vla import load_policy, predict, state_normalization  # noqa: E402
 
 DELTA = 0.1  # in training standard deviations
@@ -44,7 +44,12 @@ def analyze(policy, tokenizer, manifest, flight, every, device):
     td = touchdown_time(rows)
     _, std = state_normalization(manifest)
     used = manifest["features"]
-    inputs = [i for i, name in enumerate(FEATURES) if name in used and name not in SKIP]
+    inputs = [i for i, name in enumerate(used) if name not in SKIP]
+
+    def model_inputs(state):
+        # Derived panel values (ILS needles, DME) are moved like any other input.
+        return select_features(features(state, scenario), used, manifest.get("ils"))
+
     recorded = [r for r in rows if r.get("image")]
     frames = recorded[::every]
     # Views from the start of the approach and the last airborne frame.
@@ -52,19 +57,19 @@ def analyze(policy, tokenizer, manifest, flight, every, device):
     far, near = (
         (
             Image.open(flight / r["image"]["file"]).convert("RGB"),
-            features(r["state"], scenario),
+            model_inputs(r["state"]),
         )
         for r in (airborne[0], airborne[-1])
     )
     out = []
     for n, r in enumerate(frames):
-        x = features(r["state"], scenario)
+        x = model_inputs(r["state"])
         image = Image.open(flight / r["image"]["file"]).convert("RGB")
         obs, ims = [x], [image]
         for i in inputs:
             for sign in (1, -1):
                 y = list(x)
-                y[i] += sign * DELTA * std[used.index(FEATURES[i])]
+                y[i] += sign * DELTA * std[i]
                 obs.append(y)
                 ims.append(image)
         other_image, other_state = near if r["state"]["agl_ft"] > 100 else far
@@ -77,12 +82,12 @@ def analyze(policy, tokenizer, manifest, flight, every, device):
         ).to(device)
         policy.model.sample_noise = lambda shape, dev: noise.expand(shape).to(dev)
         policy.reset()
-        acts = predict(policy, tokenizer, manifest, obs, ims, device)
+        acts = predict(policy, tokenizer, manifest, obs, ims, device, selected=True)
         base = acts[0]
         sens = {}
         for k, i in enumerate(inputs):
             plus, minus = acts[1 + 2 * k], acts[2 + 2 * k]
-            sens[FEATURES[i]] = [(p - m) / (2 * DELTA) for p, m in zip(plus, minus)]
+            sens[used[i]] = [(p - m) / (2 * DELTA) for p, m in zip(plus, minus)]
         out.append(
             {
                 "time": r["state"]["time"],

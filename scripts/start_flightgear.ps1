@@ -60,6 +60,8 @@ if ($config.initial) {
     $start = $start | ConvertFrom-Json
     $scenarioHash = $start.hash
     Write-Host "Seed: $Seed ($StartProfile), start: lat $($start.latitude), lon $($start.longitude), altitude $($start.altitude_ft) ft, heading $($start.heading_deg), $($start.airspeed_kt) kt"
+    # Recorded DAgger starts may set the attitude (nose high: runway out of view).
+    if ($null -ne $start.pitch_deg) { $options += "--pitch=$($start.pitch_deg)" }
     foreach ($name in @("physical-ai-state", "physical-ai-action")) {
         Copy-Item -LiteralPath "$PSScriptRoot/../config/protocols/$name.xml" -Destination "$FlightGearRoot/Downloads/fgdata_2024_1/Protocol/$name.xml" -Force
     }

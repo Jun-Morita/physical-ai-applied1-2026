@@ -1,10 +1,10 @@
 """Build the submission video (1-3 min) from recorded flights.
 
     uv run --with pillow==12.0.0 python scripts/make_video.py \\
-      --before runs/eval/vla-base-aim400-1000 \\
-      --after runs/eval/vla-expert-wide-norm-15000-1000 \\
+      --before runs/eval/vla-instruments-window-dagger3-15000-r2-1001 \\
+      --after runs/eval/vla-instruments-ils-dme-window-15000-1001 \\
       --expert datasets/c172p/expert-201 \\
-      --font /mnt/c/Windows/Fonts/BIZ-UDGothicB.ttc --output runs/video/final.mp4
+      --font /mnt/c/Windows/Fonts/BIZ-UDGothicB.ttc --output runs/video/PAI最終課題_143108.mp4
 
 Recordings are wall-clock screen captures that stand still while the simulator
 is paused for image capture and inference. Each kept frame is mapped to
@@ -197,7 +197,7 @@ class Card:
     def text(self, xy, s, size, fill=INK, anchor="la"):
         self.d.text(xy, s, font=self.f(size), fill=fill, anchor=anchor)
 
-    def kicker(self, s="PHYSICAL AI 2026 応用編1 ｜ 最終課題"):
+    def kicker(self, s="Physical AI 応用編1 ｜ 最終課題"):
         self.text((80, 60), s, 22, BLUE)
 
     def save(self, path):
@@ -226,12 +226,11 @@ def cards(font, work, expert_clip):
     out = {}
     c = Card(font)
     c.kicker()
-    c.text((80, 190), "SmolVLAによる小型機の着陸", 64, NAVY)
-    c.text((80, 285), "ロボット用VLAの飛行シミュレーターでの追加学習", 40, NAVY)
+    c.text((80, 190), "パイロットと同じ情報で着陸できるか", 64, NAVY)
+    c.text((80, 285), "SmolVLAによる小型機の着陸と、AIに足りなかった距離感", 40, NAVY)
     c.d.rectangle((80, 360, 86, 470), fill=BLUE)
     c.text((110, 365), "FlightGearで、セスナ172Pを羽田空港の滑走路34Rに着陸させる", 28)
-    c.text((110, 410), "画像・指示文・機体の状態 → 操縦桿・ラダー・スロットル", 28)
-    c.text((80, 620), "Morita_Junichiro", 26, MUTED)
+    c.text((110, 410), "窓の外の景色と計器 → 操縦桿・ラダー・スロットル", 28)
     c.save(work / "title.png")
     out["title"] = work / "title.png"
 
@@ -240,10 +239,10 @@ def cards(font, work, expert_clip):
     c.text((80, 110), "課題の設定", 46, NAVY)
     rows = [
         ("開始", "滑走路の2 NM（約3.7 km）手前。乱数で横・高さ・方位・速度をずらす"),
-        ("AIの入力", "操縦席から見た画像、指示文、機体の状態17個"),
+        ("AIの入力", "窓の外の景色と、パイロットが読める計器だけ（ILS・DMEを含む）"),
         ("AIの出力", "エルロン・エレベーター・ラダー・スロットルの4つ"),
         ("モデル", "SmolVLA（ロボット用に公開されたVLA）を追加学習"),
-        ("お手本", "自作の自動着陸の飛行48回（全項目に合格し、動画で確認したもの）"),
+        ("お手本", "自作の自動着陸の飛行224回（全項目に合格したもの）"),
         ("成功", "接地位置・中心線・降下率・バウンド・脚の損傷など11項目すべてに合格"),
     ]
     y = 200
@@ -262,39 +261,43 @@ def cards(font, work, expert_clip):
 
     c = Card(font)
     c.kicker()
-    c.text((80, 110), "結果", 46, NAVY)
+    c.text((80, 110), "結果：計器を加えるごとに、できることが増えた", 46, NAVY)
     c.text(
-        (200, 140),
+        (80, 175),
         "開始位置の異なる5ケースで評価（いずれも学習には使っていない位置）",
         24,
         MUTED,
         "lm",
     )
     table = [
-        ("項目", "学習前", "学習後"),
-        ("接地まで飛べた", "0", "5"),
-        ("接地位置（0〜900 m）", "0", "5"),
-        ("中心線（15 m以内）", "0", "4"),
-        ("機首方位（5度以内）", "0", "3"),
-        ("バウンドなし（2 ft以内）", "0", "2"),
-        ("全11項目に合格", "0", "1"),
+        ("AIの入力", "横のずれ", "高さのずれ", "全項目合格"),
+        ("計器＋景色", "戻せない", "戻せない", "0/5"),
+        ("＋ILS（コースと進入角の針）", "戻せる", "戻せない", "1/5"),
+        ("＋ILS＋DME（距離計）", "戻せる", "戻し始める", "1/5"),
     ]
-    y = 200
-    for i, (k, a, b) in enumerate(table):
-        head, total = i == 0, i == len(table) - 1
+    y = 215
+    for i, row in enumerate(table):
+        head = i == 0
         c.d.rectangle(
-            (80, y, 1200, y + 58), fill=PALE if head or total else "white", outline=LINE
+            (80, y, 1200, y + 70), fill=PALE if head else "white", outline=LINE
         )
-        style = dict(fill=NAVY if head or total else INK)
-        c.text((105, y + 29), k, 28, anchor="lm", **style)
-        c.text((830, y + 29), a, 30, BEFORE if not head else NAVY, "mm")
-        c.text((1060, y + 29), b, 30, AFTER if not head else NAVY, "mm")
-        y += 58
+        c.text((105, y + 35), row[0], 28, NAVY if head else INK, "lm")
+        for x, v in zip((690, 900, 1100), row[1:]):
+            good = v.startswith("戻せる") or v.startswith("戻し") or v == "1/5"
+            color = NAVY if head else (AFTER if good else BEFORE)
+            c.text((x, y + 35), v, 28, color, "mm")
+        y += 70
     c.text(
-        (80, 640),
-        "学習前は5回とも15〜19秒で海に落ちた。学習後は5回とも接地帯に降り、1回は全項目に合格した。",
-        24,
-        MUTED,
+        (80, 540),
+        "景色だけでは、AIは自分の位置と距離を読み取れなかった。",
+        28,
+        INK,
+    )
+    c.text(
+        (80, 590),
+        "足りなかったのは操縦ではなく、人間が景色から自然に得ている距離感だった。",
+        28,
+        INK,
     )
     c.save(work / "result.png")
     out["result"] = work / "result.png"
@@ -304,14 +307,17 @@ def cards(font, work, expert_clip):
     c.text((80, 110), "今後の課題", 46, NAVY)
     items = [
         (
-            "リアルタイム化",
-            "今回は画像の取得と推論のたびにシミュレーションを止めている（実時間で約3.5倍かかる）",
+            "景色から距離を読ませる",
+            "数枚の画像を続けて入力して動きを見せる。画像を読む部分も飛行の画像で学習させる",
         ),
         (
-            "データが少ない場面",
-            "失速しかけた状態や、大きく外れた経路から立て直す手本を増やす",
+            "高さの制御",
+            "開始直後に深く降りすぎる癖が残った。経路のずれから戻す場面を重く学習させる",
         ),
-        ("接地の精度", "接地時のバウンドと機首方位のずれを減らし、合格率を上げる"),
+        (
+            "リアルタイム化",
+            "今回は画像の取得と推論のたびにシミュレーションを止めている",
+        ),
         ("ほかの機体へ", "旅客機（747-400）・戦闘機（F-14B）の進入シナリオを用意済み"),
     ]
     y = 210
@@ -339,14 +345,14 @@ def compare(font, before, after, work, out, fonts):
     """Before and after side by side from the same start, at twice simulation speed."""
     b = work / "before.mp4"
     a = work / "after.mp4"
-    flight_clip(before, work / "b", b, "学習前", BEFORE, fonts=fonts)
-    length = flight_clip(after, work / "a", a, "学習後", AFTER, fonts=fonts)
+    flight_clip(before, work / "b", b, "計器＋景色", BEFORE, fonts=fonts)
+    length = flight_clip(after, work / "a", a, "＋ILS＋DME", AFTER, fonts=fonts)
     top = work / "compare-top.png"
     caption_png(
         font,
         top,
-        "同じ開始位置から、学習前と学習後を同時に再生",
-        "評価ケース1（学習には使っていない開始位置）｜ 2倍速 ｜ 推論待ちの停止時間を除いて編集",
+        "同じ開始位置から、2つのAIを同時に再生",
+        "評価ケース2（学習に使っていない開始位置）｜ 2倍速 ｜ AIの計算中は一時停止し、その時間はカット",
     )
     panel = Image.open(top).convert("RGBA")
     d = ImageDraw.Draw(panel)
@@ -355,16 +361,16 @@ def compare(font, before, after, work, out, fonts):
         (
             13,
             BEFORE,
-            "学習前",
-            ["開始直後から極端な操作をして", "機体が傾き、海に落ちた"],
+            "計器＋景色",
+            ["自分の位置と距離が分からず、", "高さのずれも横のずれも戻せない"],
         ),
         (
             647,
             AFTER,
-            "学習後",
+            "＋ILS＋DME（パイロットが使う計器）",
             [
-                "進入経路に沿って降下し、接地目標の",
-                "ほぼ真上（396 m）に接地。全11項目に合格",
+                "低くなっても経路に戻し、中心線から",
+                "0.2 mの位置に接地。全11項目に合格",
             ],
         ),
     ):
@@ -377,10 +383,10 @@ def compare(font, before, after, work, out, fonts):
     crash = work / "crash.png"
     im = Image.new("RGBA", (620, 349), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
-    d.rounded_rectangle((110, 130, 510, 220), 14, fill=(255, 255, 255, 230))
+    d.rounded_rectangle((60, 130, 560, 220), 14, fill=(255, 255, 255, 230))
     d.text(
         (310, 175),
-        "15秒で海に落ちた",
+        "滑走路の上を高く通り過ぎた",
         font=ImageFont.truetype(font, 36),
         fill=BEFORE,
         anchor="mm",
@@ -398,7 +404,7 @@ def compare(font, before, after, work, out, fonts):
         str(crash),
         "-filter_complex",
         f"[0]setpts=PTS/2,scale=620:349,tpad=stop_mode=clone:stop_duration={seconds}[b0];"
-        f"[b0][3]overlay=0:0:enable='gte(t,{15.5 / 2})'[b];"
+        f"[b0][3]overlay=0:0:enable='gte(t,{102 / 2})'[b];"
         f"[1]setpts=PTS/2,scale=620:349[a];"
         f"color=c=#eef5f9:s={W}x{H}:d={seconds}[bg];"
         f"[bg][b]overlay=13:140[x];[x][a]overlay=647:140[y];[y][2]overlay=0:0,"
@@ -425,7 +431,7 @@ def expert_segment(font, expert, work, out, fonts):
         font,
         top,
         "お手本：自作の自動着陸（PID制御）",
-        "この飛行48回でSmolVLAを追加学習 ｜ 等倍 ｜ 画像取得の停止時間を除いて編集",
+        "このような飛行224回でSmolVLAを追加学習 ｜ 等倍 ｜ 画像の撮影中は一時停止し、その時間はカット",
     )
     run(
         "-i",
@@ -453,9 +459,11 @@ def main():
     p.add_argument("--fonts-dir", type=Path, default=Path("/mnt/c/Windows/Fonts"))
     p.add_argument("--output", type=Path, required=True)
     p.add_argument(
-        "--music", type=Path, help="Background music (looped to the video length)"
+        "--music", type=Path, help="Background music (played once; silence after it)"
     )
     p.add_argument("--music-volume", type=float, default=0.35)
+    p.add_argument("--opening", type=Path, help="Course opening jingle (optional)")
+    p.add_argument("--closing", type=Path, help="Course closing jingle (optional)")
     p.add_argument("--work", type=Path, default=Path("runs/video/work").resolve())
     a = p.parse_args()
     a.work.mkdir(parents=True, exist_ok=True)
@@ -472,14 +480,16 @@ def main():
     compare_seg = a.work / "compare.mp4"
     compare(font, a.before, a.after, a.work, compare_seg, a.fonts_dir)
     parts.append(compare_seg)
-    for name, seconds in (("result", 12), ("next", 10)):
+    for name, seconds in (("result", 20), ("next", 15)):
         out = a.work / f"{name}.mp4"
         still(c[name], out, seconds)
         parts.append(out)
     listing = a.work / "parts.txt"
     listing.write_text("".join(f"file '{p.resolve()}'\n" for p in parts))
     a.output.parent.mkdir(parents=True, exist_ok=True)
-    silent = a.work / "silent.mp4" if a.music else a.output
+    bookends = a.opening or a.closing
+    main_out = a.work / "main.mp4" if bookends else a.output
+    silent = a.work / "silent.mp4" if a.music else main_out
     run(
         "-f",
         "concat",
@@ -517,17 +527,35 @@ def main():
                 check=True,
             ).stdout
         )
-        # Quiet music under the visuals: fade in, and fade out with the last card.
+        # Quiet music under the visuals, played once: it fades out at the end of
+        # the track (or of the video) and the closing cards may run on in silence.
+        track = float(
+            subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "csv=p=0",
+                    str(a.music),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        end = min(seconds, track)
         run(
             "-i",
             str(silent),
-            "-stream_loop",
-            "-1",
             "-i",
             str(a.music),
             "-filter_complex",
             f"[1:a]volume={a.music_volume},afade=t=in:d=2,"
-            f"afade=t=out:st={seconds - 4}:d=4,atrim=duration={seconds}[m]",
+            f"afade=t=out:st={end - 4}:d=4,atrim=duration={end},"
+            f"apad=whole_dur={seconds}[m]",
             "-map",
             "0:v",
             "-map",
@@ -540,9 +568,75 @@ def main():
             "192k",
             "-movflags",
             "+faststart",
-            str(a.output),
+            str(main_out),
         )
+    if bookends:
+        bookend(main_out, a.opening, a.closing, a.output, main_audio=bool(a.music))
     print("saved", a.output)
+
+
+def bookend(main, opening, closing, out, main_audio=True):
+    """Course jingles before and after the video, at its size and frame rate.
+
+    The jingles have no sound; silence is added so the audio stays in step.
+    """
+    inputs, labels = [], []
+    for clip in (opening, main, closing):
+        if clip is None:
+            continue
+        n = len(inputs) // 2
+        inputs += ["-i", str(clip)]
+        v = f"[{n}:v]scale={W}:{H},setsar=1,fps={FPS},format=yuv420p[v{n}];"
+        if clip == main and main_audio:
+            a = f"[{n}:a]aresample=48000,aformat=channel_layouts=stereo[a{n}];"
+        else:
+            a = (
+                f"anullsrc=r=48000:cl=stereo,atrim=duration="
+                f"{probe_duration(clip)}[a{n}];"
+            )
+        labels.append((v + a, f"[v{n}][a{n}]"))
+    graph = "".join(f for f, _ in labels) + "".join(s for _, s in labels)
+    graph += f"concat=n={len(labels)}:v=1:a=1[v][a]"
+    run(
+        *inputs,
+        "-filter_complex",
+        graph,
+        "-map",
+        "[v]",
+        "-map",
+        "[a]",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "20",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-movflags",
+        "+faststart",
+        str(out),
+    )
+
+
+def probe_duration(path):
+    return float(
+        subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
 
 
 if __name__ == "__main__":

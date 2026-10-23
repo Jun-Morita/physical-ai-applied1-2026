@@ -1,30 +1,32 @@
-# SmolVLAによる小型機の着陸：ロボット用VLAの飛行シミュレーターでの追加学習
+# パイロットと同じ情報で着陸できるか：SmolVLAによる小型機の着陸
 
-Physical AI 2026 応用編1（東京大学 松尾・岩澤研究室）の最終課題のリポジトリです。
+Physical AI 応用編1（東京大学 松尾・岩澤研究室）の最終課題のリポジトリです。
 
-フライトシミュレーター **FlightGear** で、セスナ172P（C172P）を **羽田空港（RJTT）の滑走路34R** に着陸させるタスクを、ロボット用の視覚・言語・行動モデル（VLA）**SmolVLA** に追加学習させます。
+フライトシミュレーター **FlightGear** で、セスナ172P（C172P）を **羽田空港（RJTT）の滑走路34R** に着陸させるタスクを、ロボット用の視覚・言語・行動モデル（VLA）**SmolVLA** に追加学習させました。AIに与える情報は、**パイロットが操縦席で使えるもの（計器と窓の外の景色）だけ**に限っています。
 
-- **入力**：操縦席から見た画像、指示文（"Land on runway 34R at Haneda and keep the aircraft on the runway."）、機体の状態17個
+- **入力**：窓の部分を切り出した画像（512×512）、指示文（"Land on runway 34R at Haneda and keep the aircraft on the runway."）、計器の値（高度計・速度計・昇降計・姿勢・方位・旋回計・接地、ILSのコースと進入角の針、DMEの距離）
 - **出力**：エルロン・エレベーター・ラダー・スロットルの4つの操作
-- **学習データ**：自作の自動着陸プログラム（お手本）の飛行のうち、全評価項目に合格し、動画で確認したもの
+- **学習データ**：自作の自動着陸（お手本）の飛行のうち、全評価項目に合格したもの224回（AIが陥った状態から立て直すDAggerの飛行を含む）
 
-レポートのドラフトは [docs/report/report-draft.md](docs/report/report-draft.md)、開発中の試行錯誤は [docs/report-notes.md](docs/report-notes.md) にあります。
+- 提出レポート：[docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf](docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf)（原稿は [report.html](docs/report/report.html)）
+- 動画：YouTube（提出時に記載）
+- 試行錯誤の記録：[docs/report-notes.md](docs/report-notes.md)
 
 ## 結果の概要
 
-評価用の5ケース（乱数の番号1000〜1004。ケースごとに飛行の開始位置が異なり、いずれも学習に使っていない）で、追加学習の前後を比べました。
+評価は、学習に使っていない5つの開始位置（乱数の番号1000〜1004）で行いました。
 
-| 項目 | 学習前 | 学習後 |
-| --- | --- | --- |
-| 接地まで飛べた | 0/5 | 5/5 |
-| 墜落なし・脚の損傷なし | 0/5 | 5/5 |
-| 接地位置（進入端から0〜900 m） | 0/5 | 5/5 |
-| 中心線（15 m以内） | 0/5 | 4/5 |
-| 機首方位（5度以内） | 0/5 | 3/5 |
-| バウンドなし（2 ft以内） | 0/5 | 2/5 |
-| 全項目に合格 | 0/5 | 1/5 |
+| AIの入力 | お手本 | 全項目に合格 | 様子 |
+| --- | --- | --- | --- |
+| 学習前 | — | 0/5 | 開始15〜19秒で裏返って海へ |
+| 位置の数値（比較用。パイロットは知り得ない） | 48回 | 1/5 | 5回とも接地帯に接地 |
+| 計器＋景色 | 78〜224回 | 0〜1/5 | 自分の位置と距離を景色から読めず、ずれを戻せない（DAggerを3回試しても同じ） |
+| 計器＋ILS＋景色 | 224回 | 1/5 | 横のずれを戻せるようになった |
+| **計器＋ILS＋DME＋景色** | 224回 | **1/5** | 高さのずれも戻し始めた。1001は進入端から646 m、中心線から0.2 mに接地 |
 
-学習前は、5回とも開始15〜19秒で機体が裏返り、海に落ちました。追加学習後（状態を正規化して15000ステップ）は、5回とも接地帯に接地しました。うち1回は接地目標（400 m点）のほぼ真上の396 mに接地し、全項目に合格しました。残る課題は、接地時のバウンドと機首方位のずれです。
+![計器を加えるごとの飛行経路](docs/report/figures/fig5-input-ladder.png)
+
+景色だけでは、AIは自分の位置と距離を読み取れませんでした。ILSで横、DMEで縦のずれを戻し始めたことから、足りなかったのは操縦ではなく距離感だったと考えています。感度解析と画像の差し替え試験の結果はレポートの7章にあります。
 
 ## 全体の構成
 
@@ -132,7 +134,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check_flightgear.p
 
 ## 使い方
 
-全体の流れは **お手本の収録 → 確認・採用 → SmolVLAの準備 → 学習前の評価 → 追加学習 → 学習後の評価 → 比較** です。
+全体の流れは **お手本の収録 → 確認・採用 → SmolVLAの準備 → 学習前の評価 → 追加学習 → 学習後の評価 → 比較** です。最終モデル（計器＋ILS＋DME＋窓の切り出し）の作り方は、[最終モデルを作る](#最終モデルを作る) にまとめています。
 
 ### 1. お手本の飛行を収録する（Windows）
 
@@ -264,6 +266,43 @@ uv run --locked python scripts/offline_autoland.py \
   [--policy runs/mlp/c172p-expert/policy.json]
 ```
 
+## 最終モデルを作る
+
+### 1. 近くからのお手本とDAgger（Windows・Ubuntu）
+
+```powershell
+# 滑走路の近くから、大きくずれた状態で始めるお手本
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fly_c172p.ps1 -Seed 401 -Autoland -StartProfile near-1500
+# DAgger：学習したAIを学習用の番号で飛ばす（runs/rollouts/ に保存。評価用の番号は使えない）
+powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/fly_c172p.ps1 -Seed 511 -VlaBridge runs/vla/<ブリッジ名> -Rollout
+```
+
+```bash
+# AIが経路から外れた状態を開始状態として抜き出す（--mirror で中心線と進入経路に対して反転、--only-high で高すぎの状態だけ）
+python3 scripts/dagger_starts.py runs/rollouts/<ロールアウト>-51? --only-high --max-height-error-ft 450 \
+  --distances 3300 3000 2700 2400 2100 --first-seed 701 --output config/dagger/c172p-r2-high.json
+```
+
+抜き出した状態から、お手本を `-Autoland -StartProfile dagger-r2-high -Seed 701` のように収録します。開始状態の機首の角度（ピッチ）も再現します。
+
+### 2. 計器＋ILS＋DMEのモデルを学習する（Ubuntu）
+
+```bash
+uv run --project environments/vla --locked python -m landing.vla prepare --features instruments-ils-dme \
+  --window --image-size 512 \
+  --scenario config/scenarios/c172p-rjtt-34r-approach.json --output runs/vla/c172p-base-instruments-ils-dme-window
+EPISODES=$(python3 -m landing.session approved datasets/c172p \
+  --scenario config/scenarios/c172p-rjtt-34r-approach.json)
+uv run --project environments/vla --locked python -m landing.vla train $EPISODES \
+  --base runs/vla/c172p-base-instruments-ils-dme-window --output runs/vla/c172p-instruments-ils-dme-window-15000 \
+  --steps 15000 --batch-size 8 --device cuda --seed 42
+```
+
+- `--features`：`all`（位置の数値17個）、`instruments`（計器9個）、`instruments-ils`（＋ILSの針2個）、`instruments-ils-dme`（＋DME）。
+- ILSの針とDMEの値は、記録した位置から計器と同じ定義で計算します（コースは±2.5°、進入角は±0.7°で振り切れ、100 ft未満では進入角の針を0。DMEは0.1 NM刻み）。お手本を取り直す必要はありません。
+- `--window`：操縦席の画像から窓の部分を正方形に切り出します。`--vision-layers N` で画像を読む部分の最後のN層も学習し、`--weight-profile 開始条件=倍率` で特定の開始条件のお手本を多めに使います。
+- RTX 3060で約3時間かかります。評価は「使い方」の4と同じ手順で行います。
+
 ## タスクと評価
 
 設定は `config/scenarios/c172p-rjtt-34r-approach.json` にあります。
@@ -275,7 +314,7 @@ uv run --locked python scripts/offline_autoland.py \
 | 開始位置のずれ | 乱数で横±100 m・高さ±60 ft・機首方位±5度・速度±5 kt |
 | 操作 | エルロン・エレベーター・ラダー・スロットル |
 | 固定する設定 | フラップ10度、脚、トリム0、ブレーキ0 |
-| 終了 | 接地の5秒後。墜落・着水したら、その時点で終了 |
+| 終了 | 接地の5秒後。墜落・着水、または接地しないまま300秒（シミュレーション時間）で終了 |
 
 開始位置のずれは、乱数の番号（`-Seed`）で決まります。
 
@@ -292,6 +331,8 @@ uv run --locked python scripts/offline_autoland.py \
 | `wide` | 2 NM | ±150 ft・±150 m |
 | `wide-half` | 1/2 | ±75 ft・±75 m |
 | `wide-quarter` | 1/4 | ±37 ft・±37 m |
+| `near-2500` 〜 `near-600` | 2.5〜0.6 km手前 | 縮めずに±30〜±80 ft・±50〜±150 m |
+| `dagger-r1`・`dagger-r1-mirror`・`dagger-r2-high` | 記録した状態 | AIが陥った状態（`config/dagger/`） |
 
 着陸は次の項目で評価し、すべて合格したものを成功とします。
 
@@ -327,6 +368,8 @@ C172Pは、空中で開始した5秒後に、機体側のスクリプトがフ�
 | `scripts/start_flightgear.ps1` | シナリオと開始位置を指定してFlightGearを起動する |
 | `scripts/offline_autoland.py` | JSBSimでの高速な試行 |
 | `scripts/analyze_sensitivity.py` | 学習後のモデルの感度解析（入力ごとの反応、画像と状態の効き） |
+| `scripts/dagger_starts.py` | DAgger：AIのロールアウトから開始状態を抜き出す |
+| `config/dagger/` | DAggerの開始状態（一度作ったら変更しない） |
 | `config/scenarios/` | 機種ごとのシナリオ（開始条件・評価基準） |
 | `config/protocols/` | FlightGearとのUDP通信の定義 |
 | `tests/` | 模擬データによる回帰テスト |
@@ -340,34 +383,35 @@ uv run --locked ruff check . && uv run --locked ruff format --check .
 uv run --locked python -m unittest discover -s tests -v
 ```
 
-模擬データと模擬通信による34件のテストで、評価、収録の異常処理、データの検査、学習データの対応付けなどを確認します。
+模擬データと模擬通信による40件のテストで、評価、収録の異常処理、データの検査、学習データの対応付けなどを確認します。
 
 ## レポートの図とPDFの作成
 
-図3（学習前後の飛行経路）、図4（感度解析）と、レポートのPDFは次のコマンドで作り直せます。レポートの原稿は `docs/report/report.html`（1ページずつ組んだA4のHTML）で、WindowsのChromeでPDFに印刷します。
+図3（計器を加えるごとの飛行経路）と、レポートのPDFは次のコマンドで作り直せます。レポートの原稿は `docs/report/report.html`（1ページずつ組んだA4のHTML）で、WindowsのChromeでPDFに印刷します。
 
 ```bash
-uv run --with matplotlib==3.10.3 python scripts/plot_report_figures.py \
-  --before runs/eval/vla-base-aim400-1000 runs/eval/vla-base-aim400-b-100? \
-  --after runs/eval/vla-expert-wide-norm-15000-100? \
-  --font /mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc --output docs/report/figures/fig3-paths.png
-uv run --with matplotlib==3.10.3 python scripts/plot_sensitivity.py runs/analysis/sensitivity.json \
-  --model runs/vla/c172p-expert-wide-norm-15000 \
-  --font /mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc --output docs/report/figures/fig4-sensitivity.png
+uv run --with matplotlib==3.10.3 python scripts/plot_input_ladder.py \
+  --group "計器＋景色" runs/eval/vla-instruments-window-dagger3-15000-r2-100? \
+  --group "＋ILS" runs/eval/vla-instruments-ils-window-15000-100? \
+  --group "＋ILS＋DME" runs/eval/vla-instruments-ils-dme-window-15000-100? \
+  --font /mnt/c/Windows/Fonts/BIZ-UDGothicR.ttc --output docs/report/figures/fig5-input-ladder.png
 python3 scripts/build_report.py \
   --chrome "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe" [--youtube <動画のURL>]
 ```
 
 ## 提出動画の作成
 
-収録した飛行から、提出用の動画（約2分、1280×720）を作ります。録画は推論のたびに止まっている時間を含むため、各コマを飛行データのシミュレーション時刻に対応づけて並べ直し、停止時間を除いて編集します（動画内に明記）。
+収録した飛行から、提出用の動画（約2分15秒、1280×720）を作ります。AIの計算中や画像の撮影中はシミュレーターを一時停止しているため、録画には止まっている時間が含まれます。各コマを飛行データのシミュレーション時刻に対応づけて並べ直し、その時間をカットします（動画内に明記）。BGMは1回だけ流し、曲が終わったあとの結論の画面は無音です。最初と最後には、講座が配布したオープニングとエンディング（各約3秒、任意）を入れます。講座の素材はリポジトリに含めていません（`--opening`・`--closing` を省けば、なしで作れます）。
 
 ```bash
 uv run --with pillow==12.0.0 python scripts/make_video.py \
-  --before runs/eval/vla-base-aim400-1000 --after runs/eval/vla-expert-wide-norm-15000-1000 \
+  --before runs/eval/vla-instruments-window-dagger3-15000-r2-1001 \
+  --after runs/eval/vla-instruments-ils-dme-window-15000-1001 \
   --expert datasets/c172p/expert-201 --font /mnt/c/Windows/Fonts/BIZ-UDGothicB.ttc \
   --music "runs/video/music/Mistake the Getaway.mp3" \
-  --output runs/video/PAI最終課題_Morita_Junichiro.mp4
+  --opening materials/lectures/final-project/PAI応用1_最終課題_OP.mp4 \
+  --closing materials/lectures/final-project/PAI応用1_最終課題_ED.mp4 \
+  --output runs/video/PAI最終課題_143108.mp4
 ```
 
 BGMは Kevin MacLeod「Mistake the Getaway」（[incompetech.com](https://incompetech.com/)、CC BY 4.0）です。音源はリポジトリに含めていないため、同サイトから入手して `runs/video/music/` に置いてください。
@@ -376,7 +420,7 @@ BGMは Kevin MacLeod「Mistake the Getaway」（[incompetech.com](https://incomp
 
 | 文書 | 内容 |
 | --- | --- |
-| [レポート](docs/report/report.html) | 提出用レポートの原稿（HTML）。PDFは `docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf`。[下書き](docs/report/report-draft.md) は文章を練るためのMarkdown |
+| [レポート](docs/report/report.html) | 提出用レポートの原稿（HTML）。PDFは `docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf` |
 | [試行錯誤の記録](docs/report-notes.md) | 問題・原因・対策・結果の記録 |
 | [プロジェクト方針](docs/project-plan.md) | 決定事項と経緯（日付つき） |
 | [VLAパイプライン](docs/vla-pipeline.md) | SmolVLAの手順とデータの条件の詳細 |
@@ -393,5 +437,5 @@ BGMは Kevin MacLeod「Mistake the Getaway」（[incompetech.com](https://incomp
 ## 講座・課題
 
 - [講座情報（東京大学 松尾・岩澤研究室）](https://weblab.t.u-tokyo.ac.jp/lecture/course-list/physical-ai/advanced1/)
-- 最終課題の要件は、講座の案内（10/8版）に基づいています。
-- 講座の資料の原本は、開示制限に基づきGitの管理対象外としています（`materials/lectures/`）。
+- 最終課題の要件は、講座の案内（10/19版）に基づいています。
+- 講座の資料（原本と、その要点のメモ）は、開示制限に基づきGitの管理対象外としています。

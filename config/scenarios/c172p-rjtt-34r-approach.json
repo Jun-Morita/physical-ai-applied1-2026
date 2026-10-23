@@ -41,7 +41,9 @@
     "near-1500": {"distance_scale": 0.405, "scale_offsets": false, "variation": {"cross_m": 100, "height_ft": 60, "heading_deg": 5, "airspeed_kt": 5}},
     "near-1000": {"distance_scale": 0.27, "scale_offsets": false, "variation": {"cross_m": 80, "height_ft": 50, "heading_deg": 5, "airspeed_kt": 5}},
     "near-600": {"distance_scale": 0.162, "scale_offsets": false, "variation": {"cross_m": 50, "height_ft": 30, "heading_deg": 5, "airspeed_kt": 5}},
-    "dagger-r1": {"states": "config/dagger/c172p-r1.json"}
+    "dagger-r1": {"states": "config/dagger/c172p-r1.json"},
+    "dagger-r1-mirror": {"states": "config/dagger/c172p-r1-mirror.json"},
+    "dagger-r2-high": {"states": "config/dagger/c172p-r2-high.json"}
   },
   "controls": {
     "flaps": 0.3333,
@@ -59,6 +61,7 @@
   ],
   "evaluation": {
     "min_rollout_seconds": 5,
+    "max_flight_seconds": 300,
     "touchdown_max_m": 900,
     "min_sink_fps": -0.5,
     "max_sink_fps": 10,
