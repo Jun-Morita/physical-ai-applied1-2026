@@ -9,7 +9,7 @@ Physical AI 応用編1（東京大学 松尾・岩澤研究室）の最終課題
 - **学習データ**：自作の自動着陸（お手本）の飛行のうち、全評価項目に合格したもの224回（AIが陥った状態から立て直すDAggerの飛行を含む）
 
 - 提出レポート：[docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf](docs/report/説明資料_PAI最終課題_Morita_Junichiro.pdf)（原稿は [report.html](docs/report/report.html)）
-- 動画：YouTube（提出時に記載）
+- 動画：https://youtu.be/d7GHMvTnU4I
 - 試行錯誤の記録：[docs/report-notes.md](docs/report-notes.md)
 
 ## 結果の概要
